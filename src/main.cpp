@@ -41,6 +41,7 @@
 #include <cmath>
 
 #include <yaml-cpp/yaml.h>
+#include <filesystem>
 #include <iostream>
 
 static void glfw_error_callback(int error, const char* description)
