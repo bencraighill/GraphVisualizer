@@ -3,11 +3,11 @@ import yaml
 
 
 # CONFIGURATION
-LOCATION = ["Sydney, NSW, Australia"] #["Willoughby, Sydney, NSW, Australia", "Artarmon, Sydney, NSW, Australia"]
+LOCATION = ["Willoughby, Sydney, NSW, Australia", "Artarmon, Sydney, NSW, Australia"] #["Sydney, NSW, Australia"]
 NETWORK_TYPE = 'drive'  # 'drive', 'walk', 'bike', 'all'
 OUTPUT_FILE = 'network.yaml'
 NORMALIZE_RANGE = 2000.0  # Coordinates will be normalized to [-NORMALIZE_RANGE, NORMALIZE_RANGE]
-SIMPLIFIED_GRAPH = True
+SIMPLIFIED_GRAPH = False
 
 # Download road network
 G = ox.graph_from_place(LOCATION, network_type=NETWORK_TYPE, simplify=SIMPLIFIED_GRAPH)

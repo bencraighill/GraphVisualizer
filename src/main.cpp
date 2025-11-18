@@ -633,6 +633,9 @@ static void RegenerateGraph()
 
 static void Init()
 {
+	std::cout << "Current working directory: "
+		<< std::filesystem::current_path() << "\n";
+
     s_PreviousIOTime = ImGui::GetTime();
 
     circle_shader = CreateCircleShader();
