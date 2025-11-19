@@ -33,7 +33,10 @@
 #include "../libs/emscripten/emscripten_mainloop_stub.h"
 #endif
 
-#include "TextSymbols.h"
+#include "text_symbols.hpp"
+
+#include "algorithm.hpp"
+#include "algorithms/BFS.hpp"
 
 #include <vector>
 #include <queue>
@@ -1143,28 +1146,28 @@ static void OnImGuiRender()
     ImGui::End();
 }
 
-struct TraversalResult
+static AdjacencyMatrix BuildAdjacencyMatrix(const SourceGraph& graph)
 {
-    std::vector<uint32_t> TraversedEdges;
-    std::vector<uint32_t> FinalEdges;
-};
+	const size_t N = graph.Vertices.size();
 
-using AdjacencyList = std::vector<std::vector<std::pair<uint32_t, uint32_t>>>;
+	// Initialize N×N matrix with {0.0f, -1} meaning "no edge"
+	AdjacencyMatrix matrix(N, std::vector<std::pair<float, int>>(N, { 0.0f, -1 }));
 
-static AdjacencyList BuildAdjacencyList(const SourceGraph& graph)
-{
-    AdjacencyList adj(graph.Vertices.size());
+	// Populate matrix with edges
+	for (uint32_t index = 0; index < graph.Edges.size(); index++)
+	{
+		const auto& e = graph.Edges[index];
 
-    for (uint32_t index = 0; index < graph.Edges.size(); index++)
-    {
-        adj[graph.Edges[index].IndexA].push_back({ graph.Edges[index].IndexB, index });
-        adj[graph.Edges[index].IndexB].push_back({ graph.Edges[index].IndexA, index });
-    }
+        const auto& vertexA = graph.Vertices[e.IndexA];
+        const auto& vertexB = graph.Vertices[e.IndexB];
 
-    return adj;
+        const float weight = Distance(vertexA.Position, vertexB.Position);
+		matrix[e.IndexA][e.IndexB] = { weight, index };
+		matrix[e.IndexB][e.IndexA] = { weight, index };
+	}
+
+	return matrix;
 }
-
-TraversalResult BFS(uint32_t source, uint32_t destination, const AdjacencyList& adj);
 
 static DrawGraph TimeAlgorithm(uint32_t source, uint32_t destination, const SourceGraph& graph)
 {
@@ -1194,11 +1197,13 @@ static DrawGraph TimeAlgorithm(uint32_t source, uint32_t destination, const Sour
         drawGraph.EdgeVertices.push_back({ B, -normal, -1.0f, -1.0f });
     }
 
-    const AdjacencyList adjacencyList = BuildAdjacencyList(graph);
+    const AdjacencyMatrix adjacencyMatrix = BuildAdjacencyMatrix(graph);
 
     const auto start = std::chrono::high_resolution_clock::now();
-    TraversalResult result = BFS(source, destination, adjacencyList);
+    BFS bfs;
+    bfs.FindPath(adjacencyMatrix, source, destination);
     const auto end = std::chrono::high_resolution_clock::now();
+    TraversalResult result = bfs.GetResult();
 
     const double elapsed = std::chrono::duration<double, std::nano>(end - start).count();
     const double totalSteps = result.TraversedEdges.size();
@@ -1221,60 +1226,3 @@ static DrawGraph TimeAlgorithm(uint32_t source, uint32_t destination, const Sour
     drawGraph.Duration = elapsed;
     return drawGraph;
 }
-
-TraversalResult BFS(uint32_t source, uint32_t destination, const AdjacencyList& adj)
-{
-    int n = adj.size();
-    std::vector<int> parent(n, -1);
-    std::vector<bool> visited(n, false);
-    std::vector<uint32_t> traversedEdges;
-
-    std::queue<int> q;
-    q.push(source);
-    visited[source] = true;
-    int totalVisited = 1;
-
-    while (!q.empty())
-    {
-        int u = q.front(); q.pop();
-
-        for (auto& [v, edgeIndex] : adj[u])
-        {
-            if (!visited[v])
-            {
-                visited[v] = true;
-                parent[v] = u;
-                traversedEdges.push_back(edgeIndex);
-                q.push(v);
-                totalVisited++;
-            }
-        }
-    }
-
-    // Reconstruct shortest path
-    std::vector<uint32_t> finalPathEdges;
-    if (visited[destination])
-    {
-        int v = destination;
-        while (parent[v] != -1)
-        {
-            int u = parent[v];
-
-            // Find the edge between u and v
-            for (auto& [w, edgeIndex] : adj[u])
-            {
-                if (w == v)
-                {
-                    finalPathEdges.push_back(edgeIndex);
-                    break;
-                }
-            }
-
-            v = u;
-        }
-        std::reverse(finalPathEdges.begin(), finalPathEdges.end());
-    }
-
-    return { traversedEdges, finalPathEdges };
-}
-
