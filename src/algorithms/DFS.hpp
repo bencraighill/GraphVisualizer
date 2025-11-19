@@ -33,7 +33,7 @@ public:
         m_Result.FinalEdges = s;
     }
 
-    inline const char* GetName() const override { return "DFS"; }
+    inline AlgorithmType GetName() const override { return AlgorithmType::DFS; }
 
     TraversalResult GetResult() override {
 		return m_Result;

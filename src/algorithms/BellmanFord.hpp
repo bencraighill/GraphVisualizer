@@ -7,7 +7,7 @@
 
 class BellmanFord : public Algorithm {
 public:
-    inline const char* GetName() const override { return "Bellman-Ford"; }
+    inline AlgorithmType GetName() const override { return AlgorithmType::BellmanFord; }
 
     void FindPath(const AdjacencyMatrix& graph, int start, int end) override {
         int n = graph.size();

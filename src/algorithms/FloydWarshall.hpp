@@ -6,7 +6,7 @@
 
 class FloydWarshall : public Algorithm {
 public:
-    inline const char* GetName() const override { return "Floyd-Warshall"; }
+    inline AlgorithmType GetName() const override { return AlgorithmType::FloydWarshall; }
 
     void FindPath(const AdjacencyMatrix& graph, int start, int end) override {
         float inf = std::numeric_limits<float>::max();

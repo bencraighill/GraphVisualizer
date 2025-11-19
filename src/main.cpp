@@ -43,6 +43,7 @@
 #include "algorithms/DEsopoPape.hpp"
 #include "algorithms/BellmanFord.hpp"
 #include "algorithms/FloydWarshall.hpp"
+
 #include <vector>
 #include <queue>
 #include <chrono>
@@ -286,6 +287,7 @@ enum class DragType
     Viewport,
     Source,
     Target,
+    Vertex,
 };
 
 static ImVec2 viewport_offset = { 0.0f, 0.0f };
@@ -293,6 +295,7 @@ static float viewport_zoom = 1.0f;
 static ImVec2 drag_start_pos;
 static ImVec2 drag_start_offset;
 static DragType is_dragging = DragType::None;
+static int s_DraggedVertexIndex = -1;
 
 static GLuint framebuffer = 0;
 static ImVec2 framebuffer_size;
@@ -357,6 +360,11 @@ static const char* AlgorithmTypeToString(const AlgorithmType type)
     {
         case AlgorithmType::BFS:    return "BFS";
         case AlgorithmType::DFS:    return "DFS";
+        case AlgorithmType::DijkstraArray:    return "Dijkstra (Array)";
+        case AlgorithmType::DijkstraPriorityQueue:    return "Dijkstra (Priority Queue)";
+        case AlgorithmType::DEsopoPape:    return "D'Esopo-Pape";
+        case AlgorithmType::BellmanFord:    return "Bellman-Ford";
+        case AlgorithmType::FloydWarshall:    return "Floyd-Warshall";
     }
 
     return "Unknown";
@@ -605,50 +613,67 @@ static void CreateFramebuffer(const ImVec2& size)
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
-static DrawGraph TimeAlgorithm(uint32_t source, uint32_t destination, const SourceGraph& graph);
+static DrawGraph CreateDrawGraph(const SourceGraph& graph);
+static DrawGraph CreateTimedDrawGraph(uint32_t source, uint32_t destination, const SourceGraph& graph);
+
+static void UpdateDrawGraphGPUSide()
+{
+	// Update what the GPU data sees
+	glBindVertexArray(line_vao);
+	glBindBuffer(GL_ARRAY_BUFFER, line_vbo);
+	glBufferData(GL_ARRAY_BUFFER, s_DrawGraph.EdgeVertices.size() * sizeof(EdgeVertex), s_DrawGraph.EdgeVertices.data(), GL_DYNAMIC_DRAW);
+	glBindVertexArray(0);
+
+	glBindBuffer(GL_ARRAY_BUFFER, instance_vbo);
+	glBufferData(GL_ARRAY_BUFFER, s_DrawGraph.Vertices.size() * sizeof(VertexInstance), s_DrawGraph.Vertices.data(), GL_DYNAMIC_DRAW);
+	glBindBuffer(GL_ARRAY_BUFFER, 0);
+}
 
 static void RegenerateGraph()
 {
-    if (s_SourceGraph.Vertices.empty())
-        return;
+	s_DrawGraph = CreateDrawGraph(s_SourceGraph);
+	UpdateDrawGraphGPUSide();
 
-    // Find closest point to source and target
-    uint32_t source = 0;
-    float best_source_distance = Distance(s_SourceGraph.Vertices.front().Position, s_SourcePinPosition);
+    s_Time = 0.0f;
+    s_Paused = true;
+}
 
-    uint32_t target = 0;
-    float best_target_distance = Distance(s_SourceGraph.Vertices.front().Position, s_TargetPinPosition);
-
-    for (size_t index = 0; index < s_SourceGraph.Vertices.size(); index++)
+static void RegenerateTimedGraph()
+{
+    if (s_SourceGraph.Vertices.size() < 2 || s_SourceGraph.Edges.size() < 1)
     {
-        const auto& vertex = s_SourceGraph.Vertices[index];
-
-        const float source_distance = Distance(vertex.Position, s_SourcePinPosition);
-        if (source_distance < best_source_distance)
-        {
-            best_source_distance = source_distance;
-            source = index;
-        }
-
-        const float target_distance = Distance(vertex.Position, s_TargetPinPosition);
-        if (target_distance < best_target_distance)
-        {
-            best_target_distance = target_distance;
-            target = index;
-        }
+        RegenerateGraph();
+        return;
     }
 
-    s_DrawGraph = TimeAlgorithm(source, target, s_SourceGraph);
+	// Find closest point to source and target
+	uint32_t source = 0;
+	float best_source_distance = Distance(s_SourceGraph.Vertices.front().Position, s_SourcePinPosition);
 
-    // Update what the GPU data sees
-    glBindVertexArray(line_vao);
-    glBindBuffer(GL_ARRAY_BUFFER, line_vbo);
-    glBufferData(GL_ARRAY_BUFFER, s_DrawGraph.EdgeVertices.size() * sizeof(EdgeVertex), s_DrawGraph.EdgeVertices.data(), GL_DYNAMIC_DRAW);
-    glBindVertexArray(0);
+	uint32_t target = 0;
+	float best_target_distance = Distance(s_SourceGraph.Vertices.front().Position, s_TargetPinPosition);
 
-    glBindBuffer(GL_ARRAY_BUFFER, instance_vbo);
-    glBufferData(GL_ARRAY_BUFFER, s_DrawGraph.Vertices.size() * sizeof(VertexInstance), s_DrawGraph.Vertices.data(), GL_DYNAMIC_DRAW);
-    glBindBuffer(GL_ARRAY_BUFFER, 0);
+	for (size_t index = 0; index < s_SourceGraph.Vertices.size(); index++)
+	{
+		const auto& vertex = s_SourceGraph.Vertices[index];
+
+		const float source_distance = Distance(vertex.Position, s_SourcePinPosition);
+		if (source_distance < best_source_distance)
+		{
+			best_source_distance = source_distance;
+			source = index;
+		}
+
+		const float target_distance = Distance(vertex.Position, s_TargetPinPosition);
+		if (target_distance < best_target_distance)
+		{
+			best_target_distance = target_distance;
+			target = index;
+		}
+	}
+
+	s_DrawGraph = CreateTimedDrawGraph(source, target, s_SourceGraph);
+    UpdateDrawGraphGPUSide();
 }
 
 static void Init()
@@ -739,8 +764,6 @@ static void OnUpdate()
     {
         s_Time = s_Loop ? (s_Time - duration) : duration;
     }
-
-    s_SourceGraph.Vertices[0].Position.x += deltaTime * 50.0f;
 
     // Render to framebuffer
     glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
@@ -969,6 +992,20 @@ static ImVec2 WorldToScreen(const ImVec2& world_pos, const ImVec2& image_positio
     return screen_pos;
 }
 
+static int HitTestVertex(const ImVec2& mouse_pos, const ImVec2& image_position)
+{
+	const float threshold = s_VertexRadius * viewport_zoom * 1.5f;
+
+	for (int i = 0; i < (int)s_SourceGraph.Vertices.size(); i++)
+	{
+		const ImVec2 screen = WorldToScreen(s_SourceGraph.Vertices[i].Position, image_position);
+		if (Distance(mouse_pos, screen) <= threshold)
+			return i;
+	}
+
+	return -1;
+}
+
 static void OnImGuiRender()
 {
     // Create a fullscreen dockspace
@@ -1000,8 +1037,12 @@ static void OnImGuiRender()
             ImGui::EndMenu();
         }
 
-        if (ImGui::MenuItem(FA_ROUTE " Generate"))
-            RegenerateGraph();
+        if (ImGui::MenuItem(FA_ROUTE " Generate Route"))
+        {
+            RegenerateTimedGraph();
+            s_Paused = false;
+            s_Time = 0.0f;
+        }
 
         if (ImGui::BeginMenu(FA_MAGNIFYING_GLASS " View"))
         {
@@ -1070,9 +1111,33 @@ static void OnImGuiRender()
                 is_dragging = DragType::Viewport;
             else if (select_clicked)
             {
+                const ImVec2 mouse = ImGui::GetMousePos();
+
                 const ImVec2 source_pin_screen = WorldToScreen(s_SourcePinPosition, image_position);
                 const ImVec2 target_pin_screen = WorldToScreen(s_TargetPinPosition, image_position);
-                is_dragging = Distance(ImGui::GetMousePos(), source_pin_screen) < PinDragThreshold ? DragType::Source : Distance(ImGui::GetMousePos(), target_pin_screen) < PinDragThreshold ? DragType::Target : DragType::None;
+
+                if (Distance(mouse, source_pin_screen) < PinDragThreshold)
+                {
+                    is_dragging = DragType::Source;
+                }
+                else if (Distance(mouse, target_pin_screen) < PinDragThreshold)
+                {
+                    is_dragging = DragType::Target;
+                }
+                else
+                {
+					const int hit = HitTestVertex(mouse, image_position);
+					if (hit >= 0)
+					{
+						s_DraggedVertexIndex = hit;
+						is_dragging = DragType::Vertex;
+					}
+					else
+					{
+						is_dragging = DragType::None;
+					}
+                }
+
                 ImGui::ResetMouseDragDelta();
             }
         }
@@ -1122,10 +1187,17 @@ static void OnImGuiRender()
             {
                 s_TargetPinPosition = ScreenToWorld(current_pos, image_position);
             }
+			else if (select_down && is_dragging == DragType::Vertex && s_DraggedVertexIndex > 0 && s_DraggedVertexIndex < s_SourceGraph.Vertices.size())
+			{
+				const ImVec2 world = ScreenToWorld(current_pos, image_position);
+				s_SourceGraph.Vertices[s_DraggedVertexIndex].Position = world;
+				RegenerateGraph();
+			}
         }
         else
         {
             is_dragging = DragType::None;
+            s_DraggedVertexIndex = -1;
         }
     }
 
@@ -1187,38 +1259,48 @@ static AdjacencyMatrix BuildAdjacencyMatrix(const SourceGraph& graph)
 	return matrix;
 }
 
-static DrawGraph TimeAlgorithm(uint32_t source, uint32_t destination, const SourceGraph& graph)
+static DrawGraph CreateDrawGraph(const SourceGraph& graph)
 {
     DrawGraph drawGraph;
-    drawGraph.Vertices = graph.Vertices;
+	drawGraph.Vertices = graph.Vertices;
 
-    for (const auto& edge : graph.Edges)
-    {
-        const auto& A = graph.Vertices[edge.IndexA].Position;
-        const auto& B = graph.Vertices[edge.IndexB].Position;
+	for (const auto& edge : graph.Edges)
+	{
+		const auto& A = graph.Vertices[edge.IndexA].Position;
+		const auto& B = graph.Vertices[edge.IndexB].Position;
 
-        const ImVec2 to = B - A;
-        const float length = sqrtf(to.x * to.x + to.y * to.y);
-        if (length < 1e-4f)
-            continue;
+		const ImVec2 to = B - A;
+		const float length = sqrtf(to.x * to.x + to.y * to.y);
+		if (length < 1e-4f)
+			continue;
 
-        const ImVec2 direction = to / length;
-        const ImVec2 normal = { -direction.y, direction.x };
+		const ImVec2 direction = to / length;
+		const ImVec2 normal = { -direction.y, direction.x };
 
-        // push two triangles
-        drawGraph.EdgeVertices.push_back({ A,  normal, -1.0f, -1.0f });
-        drawGraph.EdgeVertices.push_back({ A, -normal, -1.0f, -1.0f });
-        drawGraph.EdgeVertices.push_back({ B,  normal, -1.0f, -1.0f });
+		// push two triangles
+		drawGraph.EdgeVertices.push_back({ A,  normal, -1.0f, -1.0f });
+		drawGraph.EdgeVertices.push_back({ A, -normal, -1.0f, -1.0f });
+		drawGraph.EdgeVertices.push_back({ B,  normal, -1.0f, -1.0f });
 
-        drawGraph.EdgeVertices.push_back({ B,  normal, -1.0f, -1.0f });
-        drawGraph.EdgeVertices.push_back({ A, -normal, -1.0f, -1.0f });
-        drawGraph.EdgeVertices.push_back({ B, -normal, -1.0f, -1.0f });
-    }
+		drawGraph.EdgeVertices.push_back({ B,  normal, -1.0f, -1.0f });
+		drawGraph.EdgeVertices.push_back({ A, -normal, -1.0f, -1.0f });
+		drawGraph.EdgeVertices.push_back({ B, -normal, -1.0f, -1.0f });
+	}
+
+    // Default duration (just so it's not zero)
+    drawGraph.Duration = 10.0f;
+
+    return drawGraph;
+}
+
+static DrawGraph CreateTimedDrawGraph(uint32_t source, uint32_t destination, const SourceGraph& graph)
+{
+    DrawGraph drawGraph = CreateDrawGraph(graph);
 
     const AdjacencyMatrix adjacencyMatrix = BuildAdjacencyMatrix(graph);
 
     const auto start = std::chrono::high_resolution_clock::now();
-    BFS bfs;
+    DFS bfs;
     bfs.FindPath(adjacencyMatrix, source, destination);
     const auto end = std::chrono::high_resolution_clock::now();
     TraversalResult result = bfs.GetResult();

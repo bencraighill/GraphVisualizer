@@ -15,6 +15,11 @@ enum class AlgorithmType
 {
 	BFS,
 	DFS,
+	DijkstraArray,
+	DijkstraPriorityQueue,
+	DEsopoPape,
+	BellmanFord,
+	FloydWarshall,
 
 	Count,
 };

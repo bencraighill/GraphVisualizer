@@ -8,7 +8,7 @@
 
 class DEsopoPape : public Algorithm {
 public:
-    inline const char* GetName() const override { return "D'Esopo-Pape"; }
+    inline AlgorithmType GetName() const override { return AlgorithmType::DEsopoPape; }
 
     void FindPath(const AdjacencyMatrix& graph, int start, int end) override {
         int n = graph.size();
