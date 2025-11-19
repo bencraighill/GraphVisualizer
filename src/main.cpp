@@ -37,7 +37,12 @@
 
 #include "algorithm.hpp"
 #include "algorithms/BFS.hpp"
-
+#include "algorithms/DFS.hpp"
+#include "algorithms/DijkstraArray.hpp"
+#include "algorithms/DijkstraQueue.hpp"
+#include "algorithms/DEsopoPape.hpp"
+#include "algorithms/BellmanFord.hpp"
+#include "algorithms/FloydWarshall.hpp"
 #include <vector>
 #include <queue>
 #include <chrono>
@@ -393,42 +398,42 @@ static GLuint CreateCircleShader()
 {
     const char* vertex = R"(
         #version 410 core
-        
+
         layout(location = 0) in vec2 a_Position;
         layout(location = 1) in vec2 a_InstancePos;
-        
+
         layout(location = 0) out vec2 v_LocalPos;
-        
+
         uniform vec2 u_ViewportSize;
         uniform vec2 u_ViewportOffset;
         uniform float u_ViewportZoom;
         uniform float u_VertexRadius;
-        
+
         void main()
         {
             v_LocalPos = a_Position;
-            
+
             // Convert to screen space with offset
             vec2 worldPos = (a_InstancePos + a_Position * u_VertexRadius) * u_ViewportZoom + u_ViewportOffset;
             vec2 ndc = (worldPos / u_ViewportSize) * 2.0 - 1.0;
             ndc.y = -ndc.y;
-    
+
             gl_Position = vec4(ndc, 0.0, 1.0);
         }
     )";
 
     const char* fragment = R"(
         #version 410 core
-        
+
         layout(location = 0) in vec2 v_LocalPos;
         layout(location = 0) out vec4 FragColor;
-        
+
         void main()
         {
             float dist = length(v_LocalPos);
             if (dist > 1.0)
                 discard;
-            
+
             // Smooth anti-aliasing
             float alpha = 1.0 - smoothstep(0.95, 1.0, dist);
             FragColor = vec4(1.0, 1.0, 1.0, alpha);
@@ -442,14 +447,14 @@ static GLuint CreateLineShader()
 {
     const char* vertex = R"(
         #version 410 core
-        
+
         layout(location = 0) in vec2 a_Position;
         layout(location = 1) in vec2 a_Normal;
         layout(location = 2) in float a_TraversalTime;
         layout(location = 3) in float a_CompletionTime;
 
         layout(location = 0) out vec3 v_Color;
-        
+
         uniform vec2 u_ViewportSize;
         uniform vec2 u_ViewportOffset;
         uniform float u_ViewportZoom;
@@ -477,7 +482,7 @@ static GLuint CreateLineShader()
 
         layout(location = 0) in vec3 v_Color;
         layout(location = 0) out vec4 FragColor;
-        
+
         void main()
         {
             FragColor = vec4(v_Color, 1.0);
@@ -1150,7 +1155,7 @@ static AdjacencyMatrix BuildAdjacencyMatrix(const SourceGraph& graph)
 {
 	const size_t N = graph.Vertices.size();
 
-	// Initialize N×N matrix with {0.0f, -1} meaning "no edge"
+	// Initialize Nï¿½N matrix with {0.0f, -1} meaning "no edge"
 	AdjacencyMatrix matrix(N, std::vector<std::pair<float, int>>(N, { 0.0f, -1 }));
 
 	// Populate matrix with edges
