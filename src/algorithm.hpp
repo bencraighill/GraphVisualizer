@@ -11,12 +11,20 @@ struct TraversalResult
 	std::vector<int> FinalEdges;
 };
 
+enum class AlgorithmType
+{
+	BFS,
+	DFS,
+
+	Count,
+};
+
 class Algorithm
 {
 public:
 	virtual ~Algorithm() = default;
 
-	virtual const char* GetName() const = 0;
+	virtual AlgorithmType GetName() const = 0;
 
 	// Everything in here will be timed
 	virtual void FindPath(const AdjacencyMatrix& graph, int start, int end) = 0;

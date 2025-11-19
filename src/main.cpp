@@ -346,6 +346,17 @@ static float Distance(const ImVec2& a, const ImVec2& b)
     return sqrtf(dx * dx + dy * dy);
 }
 
+static const char* AlgorithmTypeToString(const AlgorithmType type)
+{
+    switch (type)
+    {
+        case AlgorithmType::BFS:    return "BFS";
+        case AlgorithmType::DFS:    return "DFS";
+    }
+
+    return "Unknown";
+}
+
 static GLuint CompileShader(GLenum type, const char* source)
 {
     GLuint shader = glCreateShader(type);
@@ -723,6 +734,8 @@ static void OnUpdate()
     {
         s_Time = s_Loop ? (s_Time - duration) : duration;
     }
+
+    s_SourceGraph.Vertices[0].Position.x += deltaTime * 50.0f;
 
     // Render to framebuffer
     glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
@@ -1150,7 +1163,7 @@ static AdjacencyMatrix BuildAdjacencyMatrix(const SourceGraph& graph)
 {
 	const size_t N = graph.Vertices.size();
 
-	// Initialize N×N matrix with {0.0f, -1} meaning "no edge"
+	// Initialize Nï¿½N matrix with {0.0f, -1} meaning "no edge"
 	AdjacencyMatrix matrix(N, std::vector<std::pair<float, int>>(N, { 0.0f, -1 }));
 
 	// Populate matrix with edges
