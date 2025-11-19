@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../algorithm.hpp"
+#include <cstdio>
 #include <queue>
 #include <vector>
 
