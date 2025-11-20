@@ -1,7 +1,6 @@
 #pragma once
 
 #include "../algorithm.hpp"
-#include "../memory.hpp"
 #include <limits>
 #include <vector>
 #include <queue>
@@ -13,7 +12,6 @@ public:
     inline AlgorithmType GetName() const override { return AlgorithmType::DijkstraQueue; }
 
     void FindPath(const AdjacencyMatrix &graph, int start, int end) override {
-        start_mem();
         int n = graph.size();
 
         std::vector<float> dist(n, std::numeric_limits<float>::max());
@@ -44,7 +42,6 @@ public:
 
                 std::reverse(edges.begin(), edges.end());
                 m_Result.FinalEdges = std::move(edges);
-                m_Result.Memory = end_mem();
                 return;
             }
 
@@ -68,7 +65,6 @@ public:
         }
 
         m_Result = {};
-        m_Result.Memory = end_mem();
     }
 
     TraversalResult GetResult() override {

@@ -1,7 +1,6 @@
 #pragma once
 
 #include "../algorithm.hpp"
-#include "../memory.hpp"
 #include <vector>
 #include <limits>
 
@@ -10,7 +9,6 @@ public:
     inline AlgorithmType GetName() const override { return AlgorithmType::FloydWarshall; }
 
     void FindPath(const AdjacencyMatrix& graph, int start, int end) override {
-        start_mem();
         float inf = std::numeric_limits<float>::max();
         std::vector<std::vector<float>> dist(graph.size(), std::vector<float>(graph.size(), inf));
         std::vector<std::vector<int>> prev(graph.size(), std::vector<int>(graph.size(), -1));
@@ -44,7 +42,6 @@ public:
 
         if (dist[start][end] == inf) {
             m_Result = {};
-            m_Result.Memory = end_mem();
             return;
         }
 
@@ -56,7 +53,6 @@ public:
 
             if (next == -1) {
                 m_Result = {};
-                m_Result.Memory = end_mem();
                 return;
             }
 
@@ -68,7 +64,6 @@ public:
         }
 
         m_Result.FinalEdges = std::move(edges);
-        m_Result.Memory = end_mem();
     }
 
     TraversalResult GetResult() override {

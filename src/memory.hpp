@@ -1,9 +1,14 @@
 #pragma once
 
+#ifdef _WIN32
+#define START_MEMORY_TRACKING()
+#define END_MEMORY_TRACKING() std::vector<size_t>{}
+#else
 #include <gperftools/malloc_hook.h>
 #include <vector>
 #include <thread>
 #include <atomic>
+#include <chrono>
 
 static size_t memory_current = 0;
 static auto new_hook = [](const void*, size_t size) {  memory_current += size; };
@@ -34,3 +39,8 @@ inline std::vector<size_t> end_mem() {
     t.join();
     return result;
 }
+
+#define START_MEMORY_TRACKING() start_mem()
+#define END_MEMORY_TRACKING() end_mem()
+
+#endif

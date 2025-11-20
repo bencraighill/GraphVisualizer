@@ -1,7 +1,6 @@
 #pragma once
 
 #include "../algorithm.hpp"
-#include "../memory.hpp"
 #include <vector>
 
 static bool dfs(const AdjacencyMatrix &graph, std::vector<bool> &visited, int curr, int end, std::vector<int> &res, std::vector<int> &s, int index) {
@@ -27,13 +26,11 @@ static bool dfs(const AdjacencyMatrix &graph, std::vector<bool> &visited, int cu
 class DFS : public Algorithm {
 public:
     void FindPath(const AdjacencyMatrix& graph, int start, int end) override {
-        start_mem();
         std::vector<int> path, s;
         std::vector<bool> visited(graph.size(), false);
         dfs(graph, visited, start, end, path, s, start);
         m_Result.TraversedEdges = path;
         m_Result.FinalEdges = s;
-        m_Result.Memory = end_mem();
     }
 
     inline AlgorithmType GetName() const override { return AlgorithmType::DFS; }

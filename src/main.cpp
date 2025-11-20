@@ -48,6 +48,8 @@
 #include "algorithms/BellmanFord.hpp"
 #include "algorithms/FloydWarshall.hpp"
 
+#include "memory.hpp"
+
 #include <vector>
 #include <queue>
 #include <fstream>
@@ -2452,9 +2454,12 @@ static void AddTimedDrawGraphEntry(const AlgorithmType algorithmType, Algorithm*
     if (!s_AlgorithmEnabled[(size_t)algorithmType])
         return;
 
+    START_MEMORY_TRACKING();
 	const auto start = std::chrono::high_resolution_clock::now();
 	algorithm->FindPath(adjacencyMatrix, source, destination);
 	const auto end = std::chrono::high_resolution_clock::now();
+    std::vector<size_t> memory = END_MEMORY_TRACKING();
+
 	TraversalResult result = algorithm->GetResult();
 
 	const double elapsed = std::chrono::duration<double, std::nano>(end - start).count();
@@ -2477,6 +2482,10 @@ static void AddTimedDrawGraphEntry(const AlgorithmType algorithmType, Algorithm*
 
     if (elapsed > drawGraph.Duration)
         drawGraph.Duration = elapsed;
+
+	for (const auto r : memory) {
+		std::cout << r << " ";
+	}
 
     auto& metadata = drawGraph.Metadata[(size_t)algorithmType];
     metadata.Valid = true;
@@ -2501,10 +2510,6 @@ static DrawGraph CreateTimedDrawGraph(uint32_t source, uint32_t destination, con
     TIME_ALGORITHM(DEsopoPape);
     TIME_ALGORITHM(BellmanFord);
     TIME_ALGORITHM(FloydWarshall);
-  
-    for (const auto r : result.Memory) {
-        std::cout << r << " ";
-    }
     
     return drawGraph;
 }

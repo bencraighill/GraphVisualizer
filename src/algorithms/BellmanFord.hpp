@@ -1,7 +1,6 @@
 #pragma once
 
 #include "../algorithm.hpp"
-#include "../memory.hpp"
 #include <vector>
 #include <limits>
 #include <algorithm>
@@ -11,7 +10,6 @@ public:
     inline AlgorithmType GetName() const override { return AlgorithmType::BellmanFord; }
 
     void FindPath(const AdjacencyMatrix& graph, int start, int end) override {
-        start_mem();
         int n = graph.size();
 
         std::vector<float> dist(n, std::numeric_limits<float>::max());
@@ -57,7 +55,6 @@ public:
                 if (weight != 0.0f) {
                     if (dist[u] + weight < dist[v]) {
                         m_Result = {};
-                        m_Result.Memory = end_mem();
                         return;
                     }
                 }
@@ -66,7 +63,6 @@ public:
 
         if (dist[end] == std::numeric_limits<float>::max()) {
             m_Result = {};
-            m_Result.Memory = end_mem();
             return;
         }
 
@@ -80,7 +76,6 @@ public:
 
         std::reverse(edges.begin(), edges.end());
         m_Result.FinalEdges = std::move(edges);
-        m_Result.Memory = end_mem();
     }
 
     TraversalResult GetResult() override {
