@@ -18,6 +18,7 @@ set(IMGUI_SOURCES
     vendor/imgui/imgui_widgets.cpp
     vendor/imgui/imgui_demo.cpp
     vendor/imgui/imgui_tables.cpp
+    vendor/imgui/misc/cpp/imgui_stdlib.cpp
     vendor/imgui/backends/imgui_impl_glfw.cpp
     vendor/imgui/backends/imgui_impl_opengl3.cpp
 )
@@ -25,6 +26,11 @@ set(IMGUI_SOURCES
 # Glad source
 set(GLAD_SOURCES
     vendor/glad/src/glad.c
+)
+
+# tinyfiledialogues source
+set(TFD_SOURCES
+    vendor/tinyfiledialogs/tinyfiledialogs.c
 )
 
 set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "Disable GLFW examples")
@@ -41,11 +47,13 @@ add_executable(GraphVisualizer
     src/main.cpp
     ${IMGUI_SOURCES}
     ${GLAD_SOURCES}
+    ${TFD_SOURCES}
 )
 
 # Include directories
 target_include_directories(GraphVisualizer PRIVATE
     vendor/glad/include
+    vendor/tinyfiledialogs
     vendor/imgui
     vendor/imgui/backends
 )

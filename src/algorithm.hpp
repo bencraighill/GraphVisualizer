@@ -11,18 +11,22 @@ struct TraversalResult
 	std::vector<int> FinalEdges;
 };
 
+// Warning: modification of this requires modifying shader code
 enum class AlgorithmType
 {
 	BFS,
 	DFS,
 	DijkstraArray,
-	DijkstraPriorityQueue,
+	DijkstraQueue,
 	DEsopoPape,
 	BellmanFord,
 	FloydWarshall,
 
 	Count,
 };
+
+// Warning: modification of this requires modifying shader code
+static constexpr size_t AlgorithmTypeCount = (size_t)AlgorithmType::Count;
 
 class Algorithm
 {

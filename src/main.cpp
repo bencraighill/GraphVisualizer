@@ -9,11 +9,15 @@
 
 #include <glad/glad.h>
 
+#define TEMP_FILE_NAME "network.algograph"
+#define GENERATE_SCRIPT_PATH "Resources/Scripts/generate_graph.py"
+
 #define IMGUI_DEFINE_MATH_OPERATORS
 #include "imgui.h"
 #include "imgui_internal.h"
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_opengl3.h"
+#include "misc/cpp/imgui_stdlib.h"
 #include <stdio.h>
 #define GL_SILENCE_DEPRECATION
 #if defined(IMGUI_IMPL_OPENGL_ES2)
@@ -46,12 +50,15 @@
 
 #include <vector>
 #include <queue>
+#include <fstream>
 #include <chrono>
 #include <cmath>
 
 #include <yaml-cpp/yaml.h>
+#include <tinyfiledialogs.h>
 #include <filesystem>
 #include <iostream>
+#include <numeric>
 
 static void glfw_error_callback(int error, const char* description)
 {
@@ -128,7 +135,7 @@ int main(int, char**)
     //io.ConfigViewportsNoAutoMerge = true;
     //io.ConfigViewportsNoTaskBarIcon = true;
 
-    io.FontDefault = io.Fonts->AddFontFromFileTTF("Resources/Fonts/opensans/OpenSans-Regular.ttf", 16.0f);
+    io.FontDefault = io.Fonts->AddFontFromFileTTF("Resources/Fonts/opensans/OpenSans-Regular.ttf", 17.0f);
 
     ImFontConfig config;
     config.MergeMode = true;
@@ -137,8 +144,11 @@ int main(int, char**)
     ImWchar* icon_ranges = new ImWchar[]{ (ImWchar)0xE000, (ImWchar)0xF8FF, 0 };
     ImGui::GetIO().Fonts->AddFontFromFileTTF("Resources/Fonts/fontawesome/Font Awesome 6 Pro-Solid-900.otf", 25.0f, &config, icon_ranges);
 
-    ImWchar* other_ranges = new ImWchar[]{ (ImWchar)0xf041, (ImWchar)0xf041, (ImWchar)0xf3c5,(ImWchar)0xf3c5, 0 };
+    ImWchar* other_ranges = new ImWchar[]{ (ImWchar)0xf041, (ImWchar)0xf041, (ImWchar)0xf3c5,(ImWchar)0xf3c5, (ImWchar)0xf64f, (ImWchar)0xf64f, (ImWchar)0xf894, (ImWchar)0xf894, (ImWchar)0xf640, (ImWchar)0xf640, 0 };
     io.Fonts->AddFontFromFileTTF("Resources/Fonts/fontawesome/Font Awesome 6 Pro-Solid-900.otf", 60, nullptr, other_ranges);
+    
+    io.Fonts->AddFontFromFileTTF("Resources/Fonts/opensans/OpenSans-Bold.ttf", 18.0f);
+    ImGui::GetIO().Fonts->AddFontFromFileTTF("Resources/Fonts/fontawesome/Font Awesome 6 Pro-Solid-900.otf", 27.0f, &config, icon_ranges);
 
     // Setup Dear ImGui style
     ImGui::StyleColorsDark();
@@ -156,8 +166,11 @@ int main(int, char**)
     // When viewports are enabled we tweak WindowRounding/WindowBg so platform windows can look identical to regular ones.
     if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable)
     {
-        style.WindowRounding = 0.0f;
         style.Colors[ImGuiCol_WindowBg].w = 1.0f;
+
+		style.WindowRounding = 5.0f;
+		style.FrameRounding = 3.0f;
+		style.PopupRounding = 5.0f;
     }
 
     // Setup Platform/Renderer backends
@@ -274,12 +287,20 @@ static ImVec2 s_SourcePinPosition = { 100, 100 };
 static ImVec2 s_TargetPinPosition = { 500, 100 };
 
 static float s_VertexRadius = 5.0f;
-static float s_EdgeThickness = 1.0f;
+static float s_EdgeThickness = 2.0f;
+static float s_PlaybackSpeed = 1.0f;
+
+static constexpr size_t NumGraceFrames = 3;
 
 static float s_PreviousIOTime;
 static float s_Time = 0.0f;
+static size_t s_GraceFrames = NumGraceFrames;
 static bool s_Paused = true;
-static bool s_Loop = true;
+static bool s_Loop = false;
+
+static bool s_ShowEdgeLabels = false;
+static bool s_ShowTraversalPaths = true;
+static bool s_ShowFinalPaths = true;
 
 enum class DragType
 {
@@ -288,14 +309,81 @@ enum class DragType
     Source,
     Target,
     Vertex,
+    Edge,
+};
+
+struct DragContext
+{
+    DragType Type = DragType::None;
+    int Index = -1;
 };
 
 static ImVec2 viewport_offset = { 0.0f, 0.0f };
 static float viewport_zoom = 1.0f;
 static ImVec2 drag_start_pos;
 static ImVec2 drag_start_offset;
-static DragType is_dragging = DragType::None;
-static int s_DraggedVertexIndex = -1;
+static DragContext s_DragContext;
+
+static DragContext s_PopupContext;
+static ImVec2 s_PopupWorldPosition;
+
+static int s_AddEdgeIndex = -1;
+
+static std::array<ImVec4, AlgorithmTypeCount> s_AlgorithmCompletedColors = {{
+    { 0.941f, 0.394f, 0.082f, 1.0f },
+    { 0.271f, 0.569f, 0.910f, 1.0f },
+    { 0.941f, 0.082f, 0.082f, 1.0f },
+    { 0.354f, 0.952f, 0.119f, 1.0f },
+    { 0.905f, 0.072f, 0.940f, 1.0f },
+    { 0.972f, 0.965f, 0.118f, 1.0f },
+    { 0.080f, 0.859f, 0.821f, 1.0f },
+}};
+
+static std::array<ImVec4, AlgorithmTypeCount> s_AlgorithmTraversedColors;
+static std::array<GLint, AlgorithmTypeCount> s_AlgorithmVisible;
+static std::array<float, AlgorithmTypeCount> s_AlgorithmThickness;
+static std::array<bool, AlgorithmTypeCount> s_AlgorithmEnabled = { true, true };
+
+static std::array<size_t, AlgorithmTypeCount> s_SortedIndices;
+
+static int s_PreviousHoveredEdge = -1;
+static float s_HoveredEdgeTimer = 0.0f;
+
+enum class GenerationType
+{
+    None,
+    City,
+    Text,
+    Random,
+};
+
+struct GenerationData
+{
+    struct Address
+    {
+        std::string Suburb;
+        std::string City;
+        std::string State;
+        std::string Country;
+    };
+
+    enum class CityTravelType
+    {
+        Drive,
+        Walk,
+        Bike,
+        All,
+    };
+
+    std::vector<Address> Addresses = { { "Kensington", "Sydney", "NSW", "Australia" }};
+    CityTravelType TravelType = CityTravelType::Drive;
+    bool SimplifiedGraph = false;
+    bool Append = false;
+    float Scale = 1.0f;
+};
+
+static GenerationType s_GenerationType = GenerationType::None;
+static GenerationData s_GenerationData;
 
 static GLuint framebuffer = 0;
 static ImVec2 framebuffer_size;
@@ -320,15 +408,32 @@ struct EdgeVertex
 {
     ImVec2 Position;
     ImVec2 Normal;
-    float TraversalTime = -1.0f;
-    float CompletionTime = -1.0f;
+    std::array<float, AlgorithmTypeCount> TraversalTimes{};
+    std::array<float, AlgorithmTypeCount> CompletionTimes{};
+
+    EdgeVertex(const ImVec2& position, const ImVec2& normal)
+        : Position(position), Normal(normal)
+    {
+        TraversalTimes.fill(-1.0f);
+        CompletionTimes.fill(-1.0f);
+    }
 };
 
 struct Edge
 {
+    std::string Name;
     uint32_t IndexA;
     uint32_t IndexB;
     // Note: weight is simply the distance between the two points
+
+    Edge() = default;
+    Edge(uint32_t indexA, uint32_t indexB)
+        : IndexA(indexA), IndexB(indexB)
+    {}
+
+	Edge(const std::string& name, uint32_t indexA, uint32_t indexB)
+		: Name(name), IndexA(indexA), IndexB(indexB)
+    {}
 };
 
 struct SourceGraph
@@ -337,15 +442,29 @@ struct SourceGraph
     std::vector<Edge> Edges;
 };
 
+struct DrawGraphAlgorithmMetadata
+{
+    bool Valid = false;
+    float Duration = 0.0f;
+    float TotalDistance = 0.0f;
+    float PeakMemoryUsage = 0.0f;
+    float GraphTraversalPercentage = 0.0f;
+};
+
 struct DrawGraph
 {
     std::vector<VertexInstance> Vertices;
     std::vector<EdgeVertex> EdgeVertices;
     float Duration;
+
+    std::array<DrawGraphAlgorithmMetadata, AlgorithmTypeCount> Metadata;
 };
 
 static SourceGraph s_SourceGraph;
 static DrawGraph s_DrawGraph;
+
+static void RegenerateGraph();
+static void RegenerateTimedGraph();
 
 static float Distance(const ImVec2& a, const ImVec2& b)
 {
@@ -354,17 +473,101 @@ static float Distance(const ImVec2& a, const ImVec2& b)
     return sqrtf(dx * dx + dy * dy);
 }
 
+static void RecomputeTraversalGPUData()
+{
+	for (size_t index = 0; index < AlgorithmTypeCount; index++)
+		s_AlgorithmTraversedColors[index] = s_AlgorithmCompletedColors[index] * 0.4f + ImVec4(0.6f, 0.6f, 0.6f, 1.0f);
+
+    glUseProgram(line_shader);
+
+	GLint traversal_colors_loc = glGetUniformLocation(line_shader, "u_TraversalColors");
+	glUniform4fv(traversal_colors_loc, AlgorithmTypeCount, (const GLfloat*)s_AlgorithmTraversedColors.data());
+
+	GLint completed_colors_loc = glGetUniformLocation(line_shader, "u_CompletedColors");
+	glUniform4fv(completed_colors_loc, AlgorithmTypeCount, (const GLfloat*)s_AlgorithmCompletedColors.data());
+
+	GLint visible_loc = glGetUniformLocation(line_shader, "u_Visible");
+	glUniform1iv(visible_loc, AlgorithmTypeCount, s_AlgorithmVisible.data());
+
+	GLint thicknesses_loc = glGetUniformLocation(line_shader, "u_Thicknesses");
+	glUniform1fv(thicknesses_loc, AlgorithmTypeCount, s_AlgorithmThickness.data());
+}
+
+static void AddVertex(const ImVec2& position)
+{
+	VertexInstance v;
+	v.Position = position;
+	s_SourceGraph.Vertices.push_back(v);
+
+    RegenerateGraph();
+}
+
+static void DeleteVertex(const int index)
+{
+	if (index < 0 || index >= (int)s_SourceGraph.Vertices.size())
+		return;
+
+	// Remove edges connected to this vertex
+	auto& edges = s_SourceGraph.Edges;
+	edges.erase(std::remove_if(edges.begin(), edges.end(), [index](const Edge& e)
+	{
+		return e.IndexA == index || e.IndexB == index;
+	}), edges.end());
+
+	// Adjust edge indices greater than removed vertex
+	for (auto& e : s_SourceGraph.Edges)
+	{
+		if (e.IndexA > index) e.IndexA--;
+		if (e.IndexB > index) e.IndexB--;
+	}
+
+	// Remove vertex
+	s_SourceGraph.Vertices.erase(s_SourceGraph.Vertices.begin() + index);
+
+    RegenerateGraph();
+}
+
+static void AddEdge(const int indexA, const int indexB)
+{
+	if (indexA == indexB || indexA < 0 || indexB < 0 || indexA >= (int)s_SourceGraph.Vertices.size() || indexB >= (int)s_SourceGraph.Vertices.size())
+		return;
+
+	// Prevent duplicate edges
+	for (const auto& e : s_SourceGraph.Edges)
+	{
+		if ((e.IndexA == indexA && e.IndexB == indexB) || (e.IndexA == indexB && e.IndexB == indexA))
+			return;
+	}
+
+	Edge edge;
+	edge.IndexA = indexA;
+	edge.IndexB = indexB;
+	s_SourceGraph.Edges.push_back(edge);
+
+    RegenerateGraph();
+}
+
+static void DeleteEdge(const int index)
+{
+	if (index < 0 || index >= (int)s_SourceGraph.Edges.size())
+		return;
+
+	s_SourceGraph.Edges.erase(s_SourceGraph.Edges.begin() + index);
+
+    RegenerateGraph();
+}
+
 static const char* AlgorithmTypeToString(const AlgorithmType type)
 {
     switch (type)
     {
-        case AlgorithmType::BFS:    return "BFS";
-        case AlgorithmType::DFS:    return "DFS";
-        case AlgorithmType::DijkstraArray:    return "Dijkstra (Array)";
-        case AlgorithmType::DijkstraPriorityQueue:    return "Dijkstra (Priority Queue)";
-        case AlgorithmType::DEsopoPape:    return "D'Esopo-Pape";
+        case AlgorithmType::BFS:            return "BFS";
+        case AlgorithmType::DFS:            return "DFS";
+        case AlgorithmType::DijkstraArray:  return "Dijkstra (Array)";
+        case AlgorithmType::DijkstraQueue:  return "Dijkstra (Priority Queue)";
+        case AlgorithmType::DEsopoPape:     return "D'Esopo-Pape";
         case AlgorithmType::BellmanFord:    return "Bellman-Ford";
-        case AlgorithmType::FloydWarshall:    return "Floyd-Warshall";
+        case AlgorithmType::FloydWarshall:  return "Floyd-Warshall";
     }
 
     return "Unknown";
@@ -469,8 +672,8 @@ static GLuint CreateLineShader()
 
         layout(location = 0) in vec2 a_Position;
         layout(location = 1) in vec2 a_Normal;
-        layout(location = 2) in float a_TraversalTime;
-        layout(location = 3) in float a_CompletionTime;
+        layout(location = 2) in float a_TraversalTimes[7];
+        layout(location = 9) in float a_CompletionTimes[7];
 
         layout(location = 0) out vec3 v_Color;
 
@@ -480,13 +683,49 @@ static GLuint CreateLineShader()
         uniform float u_EdgeThickness;
         uniform float u_Time;
 
+        uniform int u_ShowTraversalPaths;
+        uniform int u_ShowFinalPaths;
+
+        uniform vec4 u_TraversalColors[7];
+        uniform vec4 u_CompletedColors[7];
+        uniform int u_Visible[7];
+        uniform float u_Thicknesses[7];
+
         void main()
         {
-            bool in_complete = (a_CompletionTime >= 0.0) && (u_Time >= a_CompletionTime);
-            bool in_traversed = (a_TraversalTime >= 0.0) && (u_Time >= a_TraversalTime);
+            vec3 colorSum = vec3(0.0);
+            float thickness_weight = 0.5;
+            float count = 0.0;
+            
+            for (int index = 0; index < 7; index++)
+            {
+                if (u_Visible[index] == 0)
+                    continue;
+                
+                bool in_complete = (u_ShowFinalPaths != 0) && (a_CompletionTimes[index] >= 0.0) && (u_Time >= a_CompletionTimes[index]);
+                bool in_traversed = (u_ShowTraversalPaths != 0) && (a_TraversalTimes[index] >= 0.0) && (u_Time >= a_TraversalTimes[index]);
+                float t;
 
-            float thickness = max((in_complete ? 2.0 : in_traversed ? 1.0 : 0.5) * u_EdgeThickness, 0.5);
-            v_Color = in_complete ? vec3(0.922, 0.812, 0.192) : in_traversed ? vec3(0.557, 0.667, 0.878) : vec3(0.5);
+                float alpha = u_CompletedColors[index].a;
+
+                if (in_complete)
+                {
+                    colorSum += u_CompletedColors[index].xyz * alpha;
+                    t = 2.0;
+                    count += alpha;
+                }
+                else if (in_traversed)
+                {
+                    colorSum += u_TraversalColors[index].xyz * alpha;
+                    t = 1.0;
+                    count += alpha;
+                }
+
+                thickness_weight = max(thickness_weight, t * u_Thicknesses[index]);
+            }
+
+            v_Color = count > 0 ? colorSum / count : vec3(0.5);
+            float thickness = thickness_weight * u_EdgeThickness;
 
             vec2 worldPos = a_Position * u_ViewportZoom + u_ViewportOffset + (a_Normal * thickness);
             vec2 ndc = (worldPos / u_ViewportSize) * 2.0 - 1.0;
@@ -565,11 +804,16 @@ static void CreateLineGeometry()
     glEnableVertexAttribArray(1); // a_Normal
     glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, sizeof(EdgeVertex), (void*)offsetof(EdgeVertex, Normal));
 
-    glEnableVertexAttribArray(2); // a_TraversalTime
-    glVertexAttribPointer(2, 1, GL_FLOAT, GL_FALSE, sizeof(EdgeVertex), (void*)offsetof(EdgeVertex, TraversalTime));
+	for (int i = 0; i < AlgorithmTypeCount; i++)
+	{
+        // a_TraversalTimes[i]
+		glEnableVertexAttribArray(2 + i);
+		glVertexAttribPointer(2 + i, 1, GL_FLOAT, GL_FALSE, sizeof(EdgeVertex), (void*)(offsetof(EdgeVertex, TraversalTimes) + i * sizeof(float)));
 
-    glEnableVertexAttribArray(3); // a_CompletionTime
-    glVertexAttribPointer(3, 1, GL_FLOAT, GL_FALSE, sizeof(EdgeVertex), (void*)offsetof(EdgeVertex, CompletionTime));
+        // a_CompletionTimes[i]
+		glEnableVertexAttribArray(2 + AlgorithmTypeCount + i);
+		glVertexAttribPointer(2 + AlgorithmTypeCount + i, 1, GL_FLOAT, GL_FALSE, sizeof(EdgeVertex), (void*)(offsetof(EdgeVertex, CompletionTimes) + i * sizeof(float)));
+	}
 
     glBindVertexArray(0);
 }
@@ -635,6 +879,7 @@ static void RegenerateGraph()
 	UpdateDrawGraphGPUSide();
 
     s_Time = 0.0f;
+    s_GraceFrames = NumGraceFrames;
     s_Paused = true;
 }
 
@@ -676,10 +921,156 @@ static void RegenerateTimedGraph()
     UpdateDrawGraphGPUSide();
 }
 
+static void NewGraph()
+{
+	s_SourcePinPosition = { 100, 100 };
+	s_TargetPinPosition = { 500, 100 };
+
+	s_SourceGraph.Vertices.clear();
+	s_SourceGraph.Edges.clear();
+	RegenerateGraph();
+}
+
+static bool LoadGraph(const char* filepath)
+{
+	YAML::Node config;
+	try
+	{
+		config = YAML::LoadFile(filepath);
+	}
+	catch (...)
+	{
+		std::cerr << "Failed to load graph visualizer file: " << filepath << std::endl;
+		return false;
+	}
+
+	if (std::filesystem::exists(TEMP_FILE_NAME))
+		std::filesystem::remove(TEMP_FILE_NAME);
+
+    const uint32_t offset = s_SourceGraph.Vertices.size();
+
+	for (const auto& node : config["nodes"])
+	{
+		const float x = node["x"].as<float>();
+		const float y = node["y"].as<float>();
+		s_SourceGraph.Vertices.push_back({ ImVec2(x, y) });
+	}
+
+	for (const auto& edge : config["edges"])
+	{
+        const auto nameNode = edge["name"];
+		const uint32_t source = edge["source"].as<uint32_t>();
+		const uint32_t target = edge["target"].as<uint32_t>();
+        s_SourceGraph.Edges.emplace_back(nameNode ? nameNode.as<std::string>() : std::string(), offset + source, offset + target);
+	}
+
+	std::cout << "Loaded " << s_SourceGraph.Vertices.size() << " nodes and " << s_SourceGraph.Edges.size() << " edges\n";
+	return true;
+}
+
+static const char* filters[] = { "*.algograph" };
+
+static bool OpenGraph()
+{
+	const char* filepath = tinyfd_openFileDialog(
+		"Open a graph visualizer file",
+		"",
+		1,
+		filters,
+		"Graph Network Visualizer File (.algograph)",
+		0
+	);
+
+    NewGraph();
+    const bool result = LoadGraph(filepath);
+	RegenerateGraph();
+	return result;
+}
+
+static bool AppendGraph()
+{
+	const char* filepath = tinyfd_openFileDialog(
+		"Append a graph visualizer file",
+		"",
+		1,
+		filters,
+		"Graph Network Visualizer File (.algograph)",
+		0
+	);
+
+    const bool result = LoadGraph(filepath);
+    RegenerateGraph();
+    return result;
+}
+
+static bool SaveGraph()
+{
+	const char* filepath = tinyfd_saveFileDialog(
+		"Save a graph visualizer file",
+		"network.algograph",
+		1,
+		filters,
+		"Graph Network Visualizer File (.algograph)"
+	);
+
+	YAML::Emitter out;
+	out << YAML::BeginMap;
+
+	// Serialize nodes
+	out << YAML::Key << "nodes" << YAML::Value << YAML::BeginSeq;
+	for (const auto& vertex : s_SourceGraph.Vertices)
+	{
+		out << YAML::BeginMap;
+		out << YAML::Key << "x" << YAML::Value << vertex.Position.x;
+		out << YAML::Key << "y" << YAML::Value << vertex.Position.y;
+		out << YAML::EndMap;
+	}
+	out << YAML::EndSeq;
+
+	// Serialize edges
+	out << YAML::Key << "edges" << YAML::Value << YAML::BeginSeq;
+	for (const auto& edge : s_SourceGraph.Edges)
+	{
+		out << YAML::BeginMap;
+		out << YAML::Key << "source" << YAML::Value << edge.IndexA;
+		out << YAML::Key << "target" << YAML::Value << edge.IndexB;
+
+        if (!edge.Name.empty())
+            out << YAML::Key << "name" << YAML::Value << edge.Name;
+
+		out << YAML::EndMap;
+	}
+	out << YAML::EndSeq;
+
+	out << YAML::EndMap;
+
+	try
+	{
+		std::ofstream fout(filepath);
+		if (!fout.is_open())
+		{
+			std::cerr << "Failed to open file for writing: " << filepath << std::endl;
+			return false;
+		}
+
+		fout << out.c_str();
+		std::cout << "Saved " << s_SourceGraph.Vertices.size() << " nodes and " << s_SourceGraph.Edges.size() << " edges to " << filepath << std::endl;
+	}
+	catch (const std::exception& e)
+	{
+		std::cerr << "Error saving graph: " << e.what() << std::endl;
+		return false;
+	}
+
+	return true;
+}
+
 static void Init()
 {
 	std::cout << "Current working directory: "
 		<< std::filesystem::current_path() << "\n";
+
+    std::iota(s_SortedIndices.begin(), s_SortedIndices.end(), 0);
 
     s_PreviousIOTime = ImGui::GetTime();
 
@@ -689,25 +1080,11 @@ static void Init()
     line_shader = CreateLineShader();
     CreateLineGeometry();
 
-    s_SourceGraph.Vertices.clear();
-    s_SourceGraph.Edges.clear();
+    s_AlgorithmVisible.fill(true);
+    s_AlgorithmThickness.fill(1.0f);
+    RecomputeTraversalGPUData();
 
-    YAML::Node config = YAML::LoadFile("network.yaml");
-    for (const auto& node : config["nodes"])
-    {
-        const float x = node["x"].as<float>();
-        const float y = node["y"].as<float>();
-        s_SourceGraph.Vertices.push_back({ ImVec2(x, -y) });
-    }
-
-    for (const auto& edge : config["edges"])
-    {
-        const uint32_t source = edge["source"].as<uint32_t>();
-        const uint32_t target = edge["target"].as<uint32_t>();
-        s_SourceGraph.Edges.push_back({ source, target });
-    }
-
-    std::cout << "Loaded " << s_SourceGraph.Vertices.size() << " nodes and " << s_SourceGraph.Edges.size() << " edges\n";
+    NewGraph();
 
 #if 0
     // Generate a test graph
@@ -740,6 +1117,69 @@ static void Init()
     RegenerateGraph();
 }
 
+static bool LoadCityGraph(const std::vector<GenerationData::Address>& addresses, const GenerationData::CityTravelType travelType, bool simplify, float scale)
+{
+    std::ostringstream oss;
+
+    // Locations: combine "Suburb, City, State, Country"
+	if (!addresses.empty())
+	{
+		oss << "--location ";
+		for (size_t i = 0; i < addresses.size(); ++i)
+		{
+			const auto& a = addresses[i];
+			std::string loc = a.Suburb + ", " + a.City + ", " + a.State + ", " + a.Country;
+
+			// Quote if contains spaces
+			if (loc.find(' ') != std::string::npos)
+				loc = "\"" + loc + "\"";
+
+			oss << loc;
+			if (i + 1 < addresses.size())
+				oss << " ";
+		}
+		oss << " ";
+	}
+
+	// Network type
+	std::string typeStr;
+	switch (travelType)
+	{
+	case GenerationData::CityTravelType::Drive: typeStr = "drive"; break;
+	case GenerationData::CityTravelType::Walk: typeStr = "walk"; break;
+	case GenerationData::CityTravelType::Bike: typeStr = "bike"; break;
+	case GenerationData::CityTravelType::All: typeStr = "all"; break;
+	}
+	oss << "--network-type " << typeStr << " ";
+
+	// Output file
+	oss << "--output-file " << TEMP_FILE_NAME << " ";
+
+	// Normalize range
+	oss << "--normalize-range " << 2000.0f * scale << " ";
+
+	// Simplified graph
+	if (simplify)
+		oss << "--simplified-graph ";
+
+    if (std::filesystem::exists(TEMP_FILE_NAME))
+        std::filesystem::remove(TEMP_FILE_NAME);
+
+#ifdef _WIN32
+    std::string cmd = "python " GENERATE_SCRIPT_PATH " " + oss.str();
+#else
+    std::string cmd = "python3 " GENERATE_SCRIPT_PATH " " + oss.str();
+#endif
+
+    const int status = std::system(cmd.c_str());
+    if (status != 0)
+    {
+        std::cout << "Search query failed for the specified location" << std::endl;
+        return false;
+    }
+
+    LoadGraph("network.algograph");
+}
 
 static float GetPlaybackDuration()
 {
@@ -757,8 +1197,19 @@ static void OnUpdate()
 
     const float duration = GetPlaybackDuration();
 
+    s_HoveredEdgeTimer += deltaTime;
+
     if (!s_Paused)
-        s_Time += (deltaTime / PlaybackCycleTime) * duration;
+    {
+        if (s_GraceFrames > 0)
+        {
+            s_GraceFrames--;
+        }
+        else
+        {
+            s_Time += (deltaTime / PlaybackCycleTime) * duration;
+        }
+    }
 
     while (s_Time > duration)
     {
@@ -799,6 +1250,12 @@ static void OnUpdate()
         GLint time_loc = glGetUniformLocation(line_shader, "u_Time");
         glUniform1f(time_loc, s_Time);
 
+		GLint show_traversal_paths_loc = glGetUniformLocation(line_shader, "u_ShowTraversalPaths");
+		glUniform1i(show_traversal_paths_loc, s_ShowTraversalPaths);
+
+		GLint show_final_paths_loc = glGetUniformLocation(line_shader, "u_ShowFinalPaths");
+		glUniform1i(show_final_paths_loc, s_ShowFinalPaths);
+
         glBindVertexArray(line_vao);
         glDrawArrays(GL_TRIANGLES, 0, edge_vertices.size());
         glBindVertexArray(0);
@@ -832,6 +1289,24 @@ static void OnUpdate()
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
+static bool DrawDiamond(ImDrawList* drawList, const ImVec2& center, const float size, const ImU32 color)
+{
+	const float radius = size * 0.5f;
+	ImVec2 pts[4] = {
+		ImVec2(center.x,     center.y - radius),
+		ImVec2(center.x + radius, center.y),
+		ImVec2(center.x,     center.y + radius),
+		ImVec2(center.x - radius, center.y)
+	};
+
+    drawList->AddConvexPolyFilled(pts, 4, color);
+
+    const ImVec2 mouse = ImGui::GetMousePos();
+	const float dx = mouse.x - center.x;
+	const float dy = mouse.y - center.y;
+    return (dx * dx + dy * dy) <= (radius * radius);
+}
+
 static bool ImGuiSequencer(float& currentTime, float minTime, float maxTime, float height = 80.0f)
 {
     ImGuiWindow* window = ImGui::GetCurrentWindow();
@@ -854,7 +1329,7 @@ static bool ImGuiSequencer(float& currentTime, float minTime, float maxTime, flo
     bool value_changed = false;
 
     // Handle mouse interaction for dragging
-    bool hovered = ImGui::IsMouseHoveringRect(bb.Min, bb.Max);
+    bool hovered = !ImGui::IsPopupOpen(ImGuiID(0), ImGuiPopupFlags_AnyPopupId) && ImGui::IsMouseHoveringRect(bb.Min, bb.Max);
 
     if (hovered && ImGui::IsMouseClicked(0)) {
         ImGui::SetActiveID(id, window);
@@ -896,7 +1371,7 @@ static bool ImGuiSequencer(float& currentTime, float minTime, float maxTime, flo
     else interval = 1.0f * magnitude;
 
     // Draw time intervals
-    float timeline_top = canvas_pos.y + 25.0f;
+    float timeline_top = canvas_pos.y + 35.0f;
     float tick_height_major = 15.0f;
     float tick_height_minor = 8.0f;
 
@@ -914,7 +1389,7 @@ static bool ImGuiSequencer(float& currentTime, float minTime, float maxTime, flo
 
         // Time label - clamp to visible area
         char label[32];
-        snprintf(label, sizeof(label), "%.2f", t);
+        snprintf(label, sizeof(label), "%.2f ns", t);
         ImVec2 text_size = ImGui::CalcTextSize(label);
         float text_x = x - text_size.x * 0.5f;
         // Clamp label position to stay within bounds
@@ -950,6 +1425,18 @@ static bool ImGuiSequencer(float& currentTime, float minTime, float maxTime, flo
     float playhead_x = canvas_pos.x + ((currentTime - minTime) / range) * canvas_width;
     playhead_x = ImClamp(playhead_x, canvas_pos.x, canvas_pos.x + canvas_width);
 
+    // Draw keyframes
+	for (size_t index = 0; index < AlgorithmTypeCount; index++)
+	{
+        const auto& metadata = s_DrawGraph.Metadata[index];
+		if (!metadata.Valid || !s_AlgorithmVisible[index] || metadata.Duration < minTime || metadata.Duration > maxTime)
+			continue;
+
+		const float x = canvas_pos.x + ((metadata.Duration - minTime) / (maxTime - minTime)) * canvas_width;
+		if (DrawDiamond(draw_list, ImVec2(x, timeline_top), 10.0f, ImGui::GetColorU32(s_AlgorithmCompletedColors[index])))
+            ImGui::SetTooltip(FA_CLOCK " %s finished in %.0f ms", AlgorithmTypeToString((AlgorithmType)index), metadata.Duration / 1'000'000.0f);
+	}
+
     // Playhead arrow
     float arrow_width = 8.0f;
     float arrow_height = 10.0f;
@@ -968,7 +1455,7 @@ static bool ImGuiSequencer(float& currentTime, float minTime, float maxTime, flo
 
     // Current time display
     char time_label[32];
-    snprintf(time_label, sizeof(time_label), "Time: %.2f", currentTime);
+    snprintf(time_label, sizeof(time_label), "Time: %.0f ms", currentTime / 1'000'000.0f);
     draw_list->AddText(
         ImVec2(canvas_pos.x + 5.0f, canvas_pos.y + canvas_size.y - 20.0f),
         text_color,
@@ -992,6 +1479,28 @@ static ImVec2 WorldToScreen(const ImVec2& world_pos, const ImVec2& image_positio
     return screen_pos;
 }
 
+static float DistancePointToSegment(const ImVec2& p, const ImVec2& a, const ImVec2& b)
+{
+	const float abx = b.x - a.x;
+	const float aby = b.y - a.y;
+	const float apx = p.x - a.x;
+	const float apy = p.y - a.y;
+
+	const float ab_len2 = abx * abx + aby * aby;
+	if (ab_len2 == 0.0f)
+		return sqrtf(apx * apx + apy * apy);
+
+	float t = (apx * abx + apy * aby) / ab_len2;
+	t = t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t);
+
+	const float cx = a.x + t * abx;
+	const float cy = a.y + t * aby;
+
+	const float dx = p.x - cx;
+	const float dy = p.y - cy;
+	return sqrtf(dx * dx + dy * dy);
+}
+
 static int HitTestVertex(const ImVec2& mouse_pos, const ImVec2& image_position)
 {
 	const float threshold = s_VertexRadius * viewport_zoom * 1.5f;
@@ -1004,6 +1513,147 @@ static int HitTestVertex(const ImVec2& mouse_pos, const ImVec2& image_position)
 	}
 
 	return -1;
+}
+
+static int HitTestEdge(const ImVec2& mouse_pos, const ImVec2& image_position)
+{
+    const float threshold = 6.0f;
+
+	for (int i = 0; i < (int)s_SourceGraph.Edges.size(); i++)
+	{
+		const auto& e = s_SourceGraph.Edges[i];
+
+		const ImVec2 a = WorldToScreen(s_SourceGraph.Vertices[e.IndexA].Position, image_position);
+		const ImVec2 b = WorldToScreen(s_SourceGraph.Vertices[e.IndexB].Position, image_position);
+
+		if (DistancePointToSegment(mouse_pos, a, b) <= threshold)
+			return i;
+	}
+
+	return -1;
+}
+
+static DragContext GetHoveredItem(const ImVec2& image_position)
+{
+    DragContext context;
+
+	const ImVec2 mouse = ImGui::GetMousePos();
+
+	const ImVec2 source_pin_screen = WorldToScreen(s_SourcePinPosition, image_position);
+	const ImVec2 target_pin_screen = WorldToScreen(s_TargetPinPosition, image_position);
+
+	if (Distance(mouse, source_pin_screen) < PinDragThreshold)
+	{
+        context.Type = DragType::Source;
+        return context;
+	}
+
+	if (Distance(mouse, target_pin_screen) < PinDragThreshold)
+	{
+        context.Type = DragType::Target;
+        return context;
+	}
+
+    // Vertex hit
+	const int vertex_hit = HitTestVertex(mouse, image_position);
+	if (vertex_hit >= 0)
+	{
+		context.Type = DragType::Vertex;
+		context.Index = vertex_hit;
+        return context;
+	}
+
+	// Edge hit
+	const int edge_hit = HitTestEdge(mouse, image_position);
+	if (edge_hit >= 0)
+	{
+		context.Type = DragType::Edge;
+		context.Index = edge_hit;
+		return context;
+	}
+
+    context.Type = DragType::None;
+    return context;
+}
+
+static const char* GetClosestEdgeLabel(const ImVec2& position)
+{
+    const char* label = nullptr;
+    float closest = std::numeric_limits<float>::max();
+
+    for (const auto& edge : s_SourceGraph.Edges)
+    {
+        const auto& vertexA = s_SourceGraph.Vertices[edge.IndexA];
+        const float distanceA = Distance(vertexA.Position, position);
+        if (distanceA < closest)
+        {
+            closest = distanceA;
+            label = !edge.Name.empty() ? edge.Name.c_str() : nullptr;
+        }
+
+        const auto& vertexB = s_SourceGraph.Vertices[edge.IndexB];
+		const float distanceB = Distance(vertexB.Position, position);
+		if (distanceB < closest)
+		{
+			closest = distanceB;
+			label = !edge.Name.empty() ? edge.Name.c_str() : nullptr;
+		}
+    }
+
+    return label;
+}
+
+static bool DrawBigTextButton(const char* id, const char* icon, const ImVec2& size)
+{
+    ImGui::PushFont(ImGui::GetIO().Fonts->Fonts[1]);
+	const bool result = ImGui::Button(id, size);
+	ImGui::GetWindowDrawList()->AddText(ImGui::GetItemRectMin() + ImVec2(8.5f, -15.0f), IM_COL32_WHITE, icon);
+    ImGui::PopFont();
+
+    return result;
+}
+
+static bool DrawTextButton(const char* label, const ImVec2& size = ImVec2(0, 0))
+{
+    ImGui::PushStyleColor(ImGuiCol_Button, {});
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, {});
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, {});
+    ImGui::PushStyleColor(ImGuiCol_Text, {});
+    const bool result = ImGui::Button(label, size);
+    ImGui::PopStyleColor(4);
+
+    ImGui::GetWindowDrawList()->AddText(ImGui::GetItemRectMin() + ImGui::GetStyle().FramePadding, ImGui::GetColorU32(ImGui::IsItemActive() ? ImGuiCol_ButtonHovered : ImGui::IsItemHovered() ? ImGuiCol_TextDisabled : ImGuiCol_Text), label);
+
+    return result;
+}
+
+// Table Sorting logic
+static ImGuiTableSortSpecs* g_SortSpecs = nullptr;
+
+static int CompareAlgorithms(const void* lhs, const void* rhs)
+{
+	const int index1 = *(const int*)lhs;
+	const int index2 = *(const int*)rhs;
+
+	const DrawGraphAlgorithmMetadata& a = s_DrawGraph.Metadata[index1];
+	const DrawGraphAlgorithmMetadata& b = s_DrawGraph.Metadata[index2];
+
+	const ImGuiTableColumnSortSpecs* spec = g_SortSpecs->Specs;
+
+	float delta = 0.0f;
+
+	switch (spec->ColumnIndex)
+	{
+	case 0: delta = (float)(index1 - index2); break;
+	case 1: delta = (a.Duration - b.Duration); break;
+	case 2: delta = (a.TotalDistance - b.TotalDistance); break;
+	case 3: delta = (a.PeakMemoryUsage - b.PeakMemoryUsage); break;
+	case 4: delta = (a.GraphTraversalPercentage - b.GraphTraversalPercentage); break;
+	}
+
+	if (delta < 0) return spec->SortDirection == ImGuiSortDirection_Ascending ? -1 : +1;
+	if (delta > 0) return spec->SortDirection == ImGuiSortDirection_Ascending ? +1 : -1;
+	return 0;
 }
 
 static void OnImGuiRender()
@@ -1030,10 +1680,27 @@ static void OnImGuiRender()
     {
         if (ImGui::BeginMenu(FA_FLOPPY_DISK " File"))
         {
-            if (ImGui::MenuItem("Open", "Ctrl+O")) {}
-            if (ImGui::MenuItem("Save", "Ctrl+S")) {}
+            if (ImGui::MenuItem(FA_FILE_PLUS " New", "Ctrl+N"))
+                NewGraph();
+            if (ImGui::MenuItem(FA_FILE_IMPORT " Open", "Ctrl+O"))
+                OpenGraph();
+            if (ImGui::MenuItem(FA_FILE_EXPORT " Save", "Ctrl+S"))
+                SaveGraph();
+			if (ImGui::MenuItem(FA_LINK " Append", "Ctrl+A"))
+				AppendGraph();
             ImGui::Separator();
-            if (ImGui::MenuItem("Exit")) { exit(0); }
+            if (ImGui::BeginMenu(FA_GEAR " Generate"))
+            {
+                if (ImGui::MenuItem(FA_CITY " City Data"))
+                    s_GenerationType = GenerationType::City;
+                if (ImGui::MenuItem(FA_ABACUS " Random"))
+                    s_GenerationType = GenerationType::Random;
+                if (ImGui::MenuItem(FA_TEXT_SIZE " Text"))
+                    s_GenerationType = GenerationType::Text;
+                ImGui::EndMenu();
+            }
+            ImGui::Separator();
+            if (ImGui::MenuItem(FA_SKULL_CROSSBONES " Exit")) { exit(0); }
             ImGui::EndMenu();
         }
 
@@ -1042,12 +1709,20 @@ static void OnImGuiRender()
             RegenerateTimedGraph();
             s_Paused = false;
             s_Time = 0.0f;
+            s_GraceFrames = NumGraceFrames;
         }
 
         if (ImGui::BeginMenu(FA_MAGNIFYING_GLASS " View"))
         {
             ImGui::DragFloat(FA_CIRCLE " Vertex Radius", &s_VertexRadius, 0.05f, 0.0f, 10.0f);
             ImGui::DragFloat(FA_DASH " Edge Thickness", &s_EdgeThickness, 0.05f, 0.25f, 5.0f);
+
+            ImGui::Separator();
+
+            ImGui::Checkbox(FA_TAG " Show Edge Labels", &s_ShowEdgeLabels);
+            ImGui::Checkbox(FA_CHART_NETWORK " Show Traversal Paths", &s_ShowTraversalPaths);
+            ImGui::Checkbox(FA_FLAG_CHECKERED " Show Final Paths", &s_ShowFinalPaths);
+
             ImGui::EndMenu();
         }
 
@@ -1066,13 +1741,15 @@ static void OnImGuiRender()
         ImGui::DockBuilderSetNodeSize(dockspace_id, viewport->WorkSize);
 
         // Split the dockspace into left and right
-        ImGuiID dock_viewport, dock_controls, dock_timeline;
-        ImGui::DockBuilderSplitNode(dockspace_id, ImGuiDir_Left, 0.8f, &dock_viewport, &dock_controls);
-        ImGui::DockBuilderSplitNode(dock_viewport, ImGuiDir_Up, 0.9f, &dock_viewport, &dock_timeline);
+        ImGuiID dock_viewport, dock_controls, dock_timeline, dock_outline;
+        ImGui::DockBuilderSplitNode(dockspace_id, ImGuiDir_Left, 0.65f, &dock_viewport, &dock_controls);
+        ImGui::DockBuilderSplitNode(dock_viewport, ImGuiDir_Up, 0.75f, &dock_viewport, &dock_timeline);
+        ImGui::DockBuilderSplitNode(dock_controls, ImGuiDir_Down, 0.6f, &dock_controls, &dock_outline);
 
         // Dock windows
         ImGui::DockBuilderDockWindow("Viewport", dock_viewport);
         ImGui::DockBuilderDockWindow("Controls", dock_controls);
+        ImGui::DockBuilderDockWindow("Outline", dock_outline);
         ImGui::DockBuilderDockWindow("Timeline", dock_timeline);
 
         ImGui::DockBuilderFinish(dockspace_id);
@@ -1087,6 +1764,7 @@ static void OnImGuiRender()
 
     const ImVec2 image_position = ImGui::GetCursorScreenPos();
     ImGui::Image((ImTextureID)color_tex, viewport_size, { 0, 1 }, { 1, 0 });
+    const bool viewportHovered = ImGui::IsItemHovered();
 
     ImGui::PushFont(ImGui::GetIO().Fonts->Fonts[1]);
     const ImVec2 pin_size = ImGui::CalcTextSize(FA_LOCATION_PIN);
@@ -1096,8 +1774,55 @@ static void OnImGuiRender()
     ImGui::GetWindowDrawList()->AddText(WorldToScreen(s_TargetPinPosition, image_position) - ImVec2(dot_size.x * 0.5f, dot_size.y), IM_COL32(150, 130, 200, 255), FA_LOCATION_DOT);
     ImGui::PopFont();
 
+    ImDrawList* drawList = ImGui::GetWindowDrawList();
+
+    if (s_AddEdgeIndex >= 0 && s_AddEdgeIndex < s_SourceGraph.Vertices.size())
+    {
+        const auto& sourceVertex = s_SourceGraph.Vertices[s_AddEdgeIndex];
+        drawList->AddLine(WorldToScreen(sourceVertex.Position, image_position), ImGui::GetMousePos(), IM_COL32_WHITE, s_EdgeThickness);
+    }
+
+    // Show the labels of all streets if enabled
+    if (s_ShowEdgeLabels)
+    {
+        for (const auto& edge : s_SourceGraph.Edges)
+        {
+            if (edge.Name.empty())
+                continue;
+
+            const auto& vertexA = s_SourceGraph.Vertices[edge.IndexA];
+            const auto& vertexB = s_SourceGraph.Vertices[edge.IndexB];
+            drawList->AddText(WorldToScreen((vertexA.Position + vertexB.Position) * 0.5f, image_position) - ImGui::CalcTextSize(edge.Name.c_str()) * 0.5f, IM_COL32_WHITE, edge.Name.c_str());
+        }
+    }
+
+    // Draw the street name label associated with the start and end point
+    if (const char* targetLabel = GetClosestEdgeLabel(s_TargetPinPosition))
+        drawList->AddText(WorldToScreen(s_TargetPinPosition, image_position) - ImVec2(ImGui::CalcTextSize(targetLabel).x * 0.5f, 0.0f), IM_COL32_WHITE, targetLabel);
+
+	if (const char* sourceLabel = GetClosestEdgeLabel(s_SourcePinPosition))
+		drawList->AddText(WorldToScreen(s_SourcePinPosition, image_position) - ImVec2(ImGui::CalcTextSize(sourceLabel).x * 0.5f, 0.0f), IM_COL32_WHITE, sourceLabel);
+
+    // Hanlde drawing of edge tooltips
+    const int hoveredEdge = viewportHovered ? HitTestEdge(ImGui::GetMousePos(), image_position) : -1;
+    if (hoveredEdge != s_PreviousHoveredEdge)
+        s_HoveredEdgeTimer = 0.0f;
+
+    if (s_HoveredEdgeTimer >= 0.35f && hoveredEdge >= 0 && hoveredEdge < s_SourceGraph.Edges.size())
+    {
+        const auto& edge = s_SourceGraph.Edges[hoveredEdge];
+        if (!edge.Name.empty())
+        {
+            ImGui::BeginTooltip();
+            ImGui::Text(FA_TAG " %s", edge.Name.c_str());
+            ImGui::EndTooltip();
+        }
+    }
+
+    s_PreviousHoveredEdge = hoveredEdge;
+
     // Handle viewport dragging
-    if (ImGui::IsItemHovered())
+    if (ImGui::IsItemHovered() && s_GenerationType == GenerationType::None)
     {
         // Start dragging
         const bool select_clicked = ImGui::IsMouseClicked(SelectMouseButton);
@@ -1108,34 +1833,24 @@ static void OnImGuiRender()
             drag_start_offset = viewport_offset;
 
             if (drag_clicked)
-                is_dragging = DragType::Viewport;
+            {
+                s_DragContext.Type = DragType::Viewport;
+                s_AddEdgeIndex = -1;
+            }
             else if (select_clicked)
             {
-                const ImVec2 mouse = ImGui::GetMousePos();
+                const DragContext hoveredItem = GetHoveredItem(image_position);
 
-                const ImVec2 source_pin_screen = WorldToScreen(s_SourcePinPosition, image_position);
-                const ImVec2 target_pin_screen = WorldToScreen(s_TargetPinPosition, image_position);
+                if (s_AddEdgeIndex != -1)
+                {
+                    if (hoveredItem.Type == DragType::Vertex && s_AddEdgeIndex != hoveredItem.Index)
+                        AddEdge(s_AddEdgeIndex, hoveredItem.Index);
 
-                if (Distance(mouse, source_pin_screen) < PinDragThreshold)
-                {
-                    is_dragging = DragType::Source;
-                }
-                else if (Distance(mouse, target_pin_screen) < PinDragThreshold)
-                {
-                    is_dragging = DragType::Target;
+                    s_AddEdgeIndex = -1;
                 }
                 else
                 {
-					const int hit = HitTestVertex(mouse, image_position);
-					if (hit >= 0)
-					{
-						s_DraggedVertexIndex = hit;
-						is_dragging = DragType::Vertex;
-					}
-					else
-					{
-						is_dragging = DragType::None;
-					}
+                    s_DragContext = hoveredItem;
                 }
 
                 ImGui::ResetMouseDragDelta();
@@ -1167,8 +1882,73 @@ static void OnImGuiRender()
         }
     }
 
+    static bool drag_occurred = false;
+
+    // Detect release
+    if (ImGui::IsMouseReleased(ImGuiMouseButton_Right))
+    {
+        if (!drag_occurred && viewportHovered)
+            ImGui::OpenPopup("##ContextMenu");
+
+        drag_occurred = false;
+    }
+
+    if (s_GenerationType == GenerationType::None && ImGui::BeginPopup("##ContextMenu"))
+    {
+        if (ImGui::IsWindowAppearing())
+        {
+            s_PopupContext = GetHoveredItem(image_position);
+            s_PopupWorldPosition = ScreenToWorld(ImGui::GetMousePos(), image_position);
+        }
+
+        char buffer[256];
+
+        if (s_PopupContext.Type == DragType::Vertex || s_PopupContext.Type == DragType::Edge)
+        {
+            const char* context_type = s_PopupContext.Type == DragType::Vertex ? "Vertex" : "Edge";
+			ImGui::TextDisabled(FA_CIRCLE_INFO " %s %d Context", context_type, s_PopupContext.Index);
+        }
+        else
+        {
+			ImGui::TextDisabled(FA_CIRCLE_INFO " Graph Context");
+        }
+
+        if (s_PopupContext.Type == DragType::Edge)
+        {
+            ImGui::Separator();
+            const auto& edge = s_SourceGraph.Edges[s_PopupContext.Index];
+            ImGui::TextDisabled(FA_CIRCLE " Endpoint A: %d", edge.IndexA);
+            ImGui::TextDisabled(FA_CIRCLE " Endpoint B: %d", edge.IndexB);
+        }
+
+        ImGui::Separator();
+
+        if (s_PopupContext.Type == DragType::None)
+        {
+            if (ImGui::MenuItem(FA_PLUS_LARGE " Add Vertex"))
+                AddVertex(s_PopupWorldPosition);
+        }
+
+        if (s_PopupContext.Type == DragType::Vertex)
+        {
+			if (ImGui::MenuItem(FA_PLUS " Add Edge"))
+				s_AddEdgeIndex = s_PopupContext.Index;
+
+            if (ImGui::MenuItem(FA_TRASH " Delete Vertex"))
+                DeleteVertex(s_PopupContext.Index);
+        }
+
+		if (s_PopupContext.Type == DragType::Edge)
+		{
+			if (ImGui::MenuItem(FA_TRASH " Delete Edge"))
+                DeleteEdge(s_PopupContext.Index);
+		}
+
+        ImGui::EndPopup();
+    }
+
     // Continue dragging
-    if (is_dragging != DragType::None)
+    if (s_DragContext.Type != DragType::None)
     {
         const bool select_down = ImGui::IsMouseDown(SelectMouseButton);
         const bool drag_down = ImGui::IsMouseDown(DragMouseButton);
@@ -1177,48 +1957,422 @@ static void OnImGuiRender()
             const ImVec2 current_pos = ImGui::GetMousePos();
             const ImVec2 delta = ImVec2(current_pos.x - drag_start_pos.x, current_pos.y - drag_start_pos.y);
 
+            if (Distance(delta, { 0.0f, 0.0f }))
+                drag_occurred = true;
+
             if (drag_down)
                 viewport_offset = ImVec2(drag_start_offset.x + delta.x, drag_start_offset.y + delta.y);
-            else if (select_down && is_dragging == DragType::Source)
+            else if (select_down && s_DragContext.Type == DragType::Source)
             {
                 s_SourcePinPosition = ScreenToWorld(current_pos, image_position);
             }
-            else if (select_down && is_dragging == DragType::Target)
+            else if (select_down && s_DragContext.Type == DragType::Target)
             {
                 s_TargetPinPosition = ScreenToWorld(current_pos, image_position);
             }
-			else if (select_down && is_dragging == DragType::Vertex && s_DraggedVertexIndex > 0 && s_DraggedVertexIndex < s_SourceGraph.Vertices.size())
+			else if (select_down && s_DragContext.Type == DragType::Vertex && s_DragContext.Index >= 0 && s_DragContext.Index < s_SourceGraph.Vertices.size())
 			{
 				const ImVec2 world = ScreenToWorld(current_pos, image_position);
-				s_SourceGraph.Vertices[s_DraggedVertexIndex].Position = world;
+				s_SourceGraph.Vertices[s_DragContext.Index].Position = world;
 				RegenerateGraph();
 			}
         }
         else
-        {
-            is_dragging = DragType::None;
-            s_DraggedVertexIndex = -1;
+		{
+			s_DragContext = {};
         }
+    }
+
+    constexpr ImVec2 ButtonSize = { 50.0f, 50.0f };
+    auto& style = ImGui::GetStyle();
+    const ImVec2 windowPosition = ImGui::GetWindowPos();
+    const ImVec2 windowSize = ImGui::GetWindowSize();
+    ImGui::SetCursorScreenPos(ImVec2(windowPosition.x + windowSize.x - style.WindowPadding.x - 3.0f * (ButtonSize.x + style.FramePadding.x * 2.0f), windowPosition.y + style.WindowPadding.y));
+
+    if (DrawBigTextButton("##Random", FA_ABACUS, ButtonSize))
+        s_GenerationType = GenerationType::Random;
+    ImGui::SameLine();
+    if (DrawBigTextButton("##Text", FA_TEXT_SIZE, ButtonSize))
+        s_GenerationType = GenerationType::Text;
+    ImGui::SameLine();
+    if (DrawBigTextButton("##City", FA_CITY, ButtonSize))
+        s_GenerationType = GenerationType::City;
+
+    ImGui::End();
+
+    // Generation Popup
+    if (s_GenerationType != GenerationType::None)
+    {
+        ImGui::OpenPopup(FA_GEAR " Graph Generation Options");
+
+		const ImGuiViewport* viewport = ImGui::GetMainViewport();
+		const ImVec2 center = viewport->GetCenter();
+		const ImVec2 size(viewport->Size.x * 0.5f, viewport->Size.y * 0.75f);
+
+		ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+		ImGui::SetNextWindowSize(size);
+
+		if (ImGui::BeginPopupModal(FA_GEAR " Graph Generation Options", nullptr,
+			ImGuiWindowFlags_NoResize |
+			ImGuiWindowFlags_NoMove |
+			ImGuiWindowFlags_NoCollapse |
+			ImGuiWindowFlags_NoSavedSettings |
+			ImGuiWindowFlags_AlwaysAutoResize))
+		{
+            if (ImGui::IsWindowAppearing())
+            {
+                s_GenerationData = {};
+            }
+
+            ImGui::PushFont(ImGui::GetIO().Fonts->Fonts[2]);
+            ImGui::Text("%s Graph Generation", s_GenerationType == GenerationType::City ? "City Network" : s_GenerationType == GenerationType::Text ? "Text" : "Random");
+            ImGui::PopFont();
+
+			ImGui::Spacing();
+			ImGui::Separator();
+			ImGui::Spacing();
+
+			if (s_GenerationType == GenerationType::City)
+			{
+				ImGui::PushFont(ImGui::GetIO().Fonts->Fonts[2]);
+				ImGui::Text(FA_MAP_LOCATION " Addresses");
+				ImGui::PopFont();
+
+				ImGui::Spacing();
+
+				// Child window for scrollable address entries
+				const float childHeight = size.y * 0.35f;
+				ImGui::BeginChild("AddressListChild", ImVec2(0, childHeight), true);
+
+				for (size_t i = 0; i < s_GenerationData.Addresses.size(); i++)
+				{
+					auto& addr = s_GenerationData.Addresses[i];
+
+					ImGui::PushID((int)i);
+
+					ImGui::PushFont(ImGui::GetIO().Fonts->Fonts[2]);
+					ImGui::Text("Address %zu", i + 1);
+					ImGui::PopFont();
+					ImGui::Spacing();
+
+                    const ImVec2 startPos = ImGui::GetCursorScreenPos();
+
+					ImGui::BeginGroup();
+                    {
+
+                        // Column layout: labels left, inputs right
+                        ImGui::Columns(2, nullptr, false);
+                        ImGui::SetColumnWidth(0, 90.0f); // fixed label width
+
+                        // Suburb
+                        ImGui::Text(FA_HOUSE " Suburb");
+                        ImGui::NextColumn();
+                        ImGui::InputText("##Suburb", &addr.Suburb);
+                        ImGui::NextColumn();
+
+                        // City
+                        ImGui::Text(FA_CITY " City");
+                        ImGui::NextColumn();
+                        ImGui::InputText("##City", &addr.City);
+                        ImGui::NextColumn();
+
+                        // State
+                        ImGui::Text(FA_MAP " State");
+                        ImGui::NextColumn();
+                        ImGui::InputText("##State", &addr.State);
+                        ImGui::NextColumn();
+
+                        // Country
+                        ImGui::Text(FA_EARTH_AMERICAS " Country");
+                        ImGui::NextColumn();
+                        ImGui::InputText("##Country", &addr.Country);
+
+                        ImGui::Columns(1);
+                    }
+					ImGui::EndGroup();
+
+                    const ImVec2 endPos = ImGui::GetItemRectMax();
+					const float midY = (startPos.y + endPos.y) * 0.5f;
+					const float iconSize = ImGui::GetFontSize() * 1.3f;
+
+					ImVec2 iconPos(
+						ImGui::GetWindowPos().x +
+						ImGui::GetWindowContentRegionMax().x - iconSize * 1.5f,
+						midY - iconSize * 0.5f
+					);
+
+					ImGui::SetCursorScreenPos(iconPos);
+
+					ImGui::BeginDisabled(s_GenerationData.Addresses.size() <= 1);
+					ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
+					ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0, 0, 0, 0));
+					ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0, 0, 0, 0));
+
+					if (ImGui::Button(FA_TRASH "##remove", ImVec2(iconSize, iconSize)))
+					{
+						s_GenerationData.Addresses.erase(s_GenerationData.Addresses.begin() + i);
+						ImGui::PopStyleColor(3);
+						ImGui::EndDisabled();
+						ImGui::PopID();
+						break;
+					}
+
+					ImGui::PopStyleColor(3);
+					ImGui::EndDisabled();
+
+                    ImGui::Dummy(ImVec2(0.0f, 35.0f));
+
+					ImGui::Spacing();
+					ImGui::Spacing();
+					ImGui::PopID();
+				}
+
+				ImGui::EndChild();
+
+				ImGui::Spacing();
+
+				// Add new address button (centered)
+				{
+					float addWidth = 180.0f;
+					float x = (size.x - addWidth) * 0.5f;
+					ImGui::SetCursorPosX(x);
+					if (ImGui::Button(FA_PLUS " Add Address", ImVec2(addWidth, 0)))
+					{
+						s_GenerationData.Addresses.push_back({ "", "Sydney", "NSW", "Australia" });
+					}
+				}
+
+				ImGui::Spacing();
+				ImGui::Spacing();
+
+				ImGui::PushFont(ImGui::GetIO().Fonts->Fonts[2]);
+				ImGui::Text(FA_CITY " Network Options");
+				ImGui::PopFont();
+				ImGui::Spacing();
+
+				// City type combo box
+
+				const char* cityTypes[] = { FA_CAR " Drive", FA_PERSON_WALKING " Walk", FA_BICYCLE " Bike", FA_BACKPACK " All" };
+                int current = (int)s_GenerationData.TravelType;
+
+                ImGui::Indent();
+
+				ImGui::TextUnformatted(FA_SUITCASE " Travel Options");
+				ImGui::SameLine();
+
+				if (ImGui::BeginCombo("##CityTypeCombo", cityTypes[current]))
+				{
+					for (int i = 0; i < 4; i++)
+					{
+						bool selected = (i == current);
+						if (ImGui::Selectable(cityTypes[i], selected))
+							s_GenerationData.TravelType = (GenerationData::CityTravelType)i;
+						if (selected)
+							ImGui::SetItemDefaultFocus();
+					}
+					ImGui::EndCombo();
+				}
+
+				ImGui::TextUnformatted(FA_SHAPES " Simplified Graph");
+				ImGui::SameLine();
+				ImGui::Checkbox("##SimpleGraph", &s_GenerationData.SimplifiedGraph);
+
+                ImGui::Unindent();
+
+				ImGui::Spacing();
+				ImGui::Spacing();
+			}
+
+			ImGui::PushFont(ImGui::GetIO().Fonts->Fonts[2]);
+			ImGui::Text(FA_SLIDERS " Graph Options");
+			ImGui::PopFont();
+			ImGui::Spacing();
+
+			{
+                ImGui::Indent();
+                ImGui::TextUnformatted(FA_EXPAND " Scale");
+                ImGui::SameLine();
+				ImGui::DragFloat("##ScaleInput", &s_GenerationData.Scale, 0.2f, 0.1f, 10.0f, "%.2f");
+
+				ImGui::TextUnformatted(FA_LINK " Append to Existing");
+				ImGui::SameLine();
+				ImGui::Checkbox("##AppendGraph", &s_GenerationData.Append);
+
+                ImGui::Unindent();
+			}
+
+			ImGui::Spacing();
+			ImGui::Separator();
+			ImGui::Spacing();
+
+			const float buttonWidth = 120.0f;
+			const float spacing = 40.0f;
+			const float totalWidth = buttonWidth * 2 + spacing;
+
+            ImGui::Dummy(ImVec2(0.0f, ImGui::GetContentRegionAvail().y - 50.0f));
+
+			ImGui::SetCursorPosX((size.x - totalWidth) * 0.5f);
+
+
+            if (ImGui::Button(FA_CIRCLE_XMARK " Cancel", ImVec2(buttonWidth, 0)))
+			{
+				s_GenerationType = GenerationType::None;
+				ImGui::CloseCurrentPopup();
+            }
+
+			ImGui::SameLine();
+
+			if (ImGui::Button(FA_CHART_NETWORK " Generate", ImVec2(buttonWidth, 0)))
+			{
+                if (!s_GenerationData.Append)
+                    NewGraph();
+
+                LoadCityGraph(s_GenerationData.Addresses, s_GenerationData.TravelType, s_GenerationData.SimplifiedGraph, s_GenerationData.Scale);
+                RegenerateGraph();
+
+				s_GenerationType = GenerationType::None;
+				ImGui::CloseCurrentPopup();
+			}
+
+			ImGui::EndPopup();
+		}
+    }
+
+    // Graph Outliner
+    ImGui::Begin("Outline", nullptr, window_flags);
+
+    for (size_t index = 0; index < AlgorithmTypeCount; index++)
+    {
+        ImGui::PushID(index);
+
+        if (DrawTextButton(s_AlgorithmVisible[index] ? FA_EYE : FA_EYE_SLASH))
+        {
+            s_AlgorithmVisible[index] = !s_AlgorithmVisible[index];
+            RecomputeTraversalGPUData();
+        }
+
+        ImGui::SameLine();
+
+        if (ImGui::ColorEdit4("##color", (float*)&s_AlgorithmCompletedColors[index], ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel))
+            RecomputeTraversalGPUData();
+
+        ImGui::SameLine();
+        s_AlgorithmEnabled[index] && s_AlgorithmVisible[index] ? ImGui::TextUnformatted(AlgorithmTypeToString((AlgorithmType)index)) : ImGui::TextDisabled(AlgorithmTypeToString((AlgorithmType)index));
+		ImGui::SameLine();
+
+        ImGui::Dummy(ImVec2(ImGui::GetContentRegionAvail().x - 200.0f, 0.0f));
+        ImGui::SameLine();
+
+		ImGui::TextDisabled(FA_PEN);
+		ImGui::SameLine();
+        ImGui::PushStyleColor(ImGuiCol_FrameBg, {});
+        ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, {});
+        ImGui::SetNextItemWidth(35.0f);
+        if (ImGui::DragFloat("##Thickness", &s_AlgorithmThickness[index], 0.2f, 0.1f, 10.0f, "%.2f"))
+            RecomputeTraversalGPUData();
+        ImGui::PopStyleColor(2);
+        
+        ImGui::SameLine();
+
+		ImGui::TextDisabled(FA_CIRCLE_HALF_STROKE);
+		ImGui::SameLine();
+		ImGui::PushStyleColor(ImGuiCol_FrameBg, {});
+		ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, {});
+		ImGui::SetNextItemWidth(35.0f);
+        if (ImGui::DragFloat("##Opacity", &s_AlgorithmCompletedColors[index].w, 0.05f, 0.0f, 1.0f, "%.2f"))
+            RecomputeTraversalGPUData();
+		ImGui::PopStyleColor(2);
+
+		ImGui::SameLine();
+
+        if (DrawTextButton(s_AlgorithmEnabled[index] ? FA_XMARK : FA_CHECK))
+            s_AlgorithmEnabled[index] = !s_AlgorithmEnabled[index];
+
+        ImGui::PopID();
     }
 
     ImGui::End();
 
+    // Control Panel
     ImGui::Begin("Controls", nullptr, window_flags);
 
-    ImGui::Text("Vertex count: %zu", s_SourceGraph.Vertices.size());
-    ImGui::Text("Vertex count: %zu", s_SourceGraph.Edges.size());
+    ImGui::PushFont(ImGui::GetIO().Fonts->Fonts[2]);
+    ImGui::TextUnformatted(FA_SLIDERS " Controls");
+    ImGui::PopFont();
 
-    ImGui::Separator();
+    ImGui::Text(FA_CIRCLE " Vertex count: %zu", s_SourceGraph.Vertices.size());
+    ImGui::Text(FA_DASH " Edge count: %zu", s_SourceGraph.Edges.size());
 
-    if (ImGui::Button("Reset View"))
+    if (ImGui::Button(FA_REDO " Reset View"))
     {
         viewport_offset = ImVec2(0.0f, 0.0f);
         viewport_zoom = 1.0f;
     }
 
-    ImGui::Text("Offset: %.1f, %.1f", viewport_offset.x, viewport_offset.y);
+    ImGui::Text(FA_ARROWS_UP_DOWN_LEFT_RIGHT " Offset: %.1f, %.1f", viewport_offset.x, viewport_offset.y);
+
+    ImGui::Spacing();
+    ImGui::Spacing();
+	ImGui::Separator();
+    ImGui::Spacing();
+    ImGui::Spacing();
+
+    // Statistics Menu
+	ImGui::PushFont(ImGui::GetIO().Fonts->Fonts[2]);
+	ImGui::TextUnformatted(FA_CHART_LINE " Statistics");
+	ImGui::PopFont();
+
+	if (ImGui::BeginTable("##StatisticsTable", 5, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Sortable))
+    {
+		// Column headers
+		ImGui::TableSetupColumn(FA_DIAGRAM_PROJECT " Algorithm");
+		ImGui::TableSetupColumn(FA_TIMER " Execution Time");
+		ImGui::TableSetupColumn(FA_RULER " Distance");
+		ImGui::TableSetupColumn(FA_MEMORY " Peak Memory Usage");
+		ImGui::TableSetupColumn(FA_CODE_BRANCH " Graph Traversed");
+		ImGui::TableHeadersRow();
+
+		if (ImGuiTableSortSpecs* sort_specs = ImGui::TableGetSortSpecs())
+		{
+			if (sort_specs->SpecsDirty)
+			{
+				g_SortSpecs = sort_specs;
+				qsort(s_SortedIndices.data(), s_SortedIndices.size(), sizeof(size_t), CompareAlgorithms);
+				sort_specs->SpecsDirty = false;
+			}
+		}
+
+		// Rows
+		for (size_t index : s_SortedIndices)
+        {
+            const auto& metadata = s_DrawGraph.Metadata[index];
+            if (!metadata.Valid)
+                continue;
+
+			ImGui::TableNextRow();
+
+			ImGui::TableSetColumnIndex(0);
+			ImGui::Text("%s", AlgorithmTypeToString((AlgorithmType)index));
+
+			ImGui::TableSetColumnIndex(1);
+			ImGui::Text("%.0f ms", metadata.Duration / 1'000'000.0f);
+
+			ImGui::TableSetColumnIndex(2);
+			ImGui::Text("%.0f units", metadata.TotalDistance);
+
+			ImGui::TableSetColumnIndex(3);
+			ImGui::Text("%.3f Kb", metadata.PeakMemoryUsage);
+
+			ImGui::TableSetColumnIndex(4);
+			ImGui::Text("%.0f%%", metadata.GraphTraversalPercentage * 100.0f);
+		}
+
+		ImGui::EndTable();
+	}
+
     ImGui::End();
 
+    // Timeline
     ImGui::Begin("Timeline", nullptr, window_flags);
     ImGui::Dummy(ImVec2((ImGui::GetContentRegionAvail().x - (100.0f + ImGui::GetStyle().FramePadding.x * 2.0f)) * 0.5f, 0.0f));
     ImGui::SameLine();
@@ -1278,13 +2432,13 @@ static DrawGraph CreateDrawGraph(const SourceGraph& graph)
 		const ImVec2 normal = { -direction.y, direction.x };
 
 		// push two triangles
-		drawGraph.EdgeVertices.push_back({ A,  normal, -1.0f, -1.0f });
-		drawGraph.EdgeVertices.push_back({ A, -normal, -1.0f, -1.0f });
-		drawGraph.EdgeVertices.push_back({ B,  normal, -1.0f, -1.0f });
+		drawGraph.EdgeVertices.emplace_back(A,  normal);
+		drawGraph.EdgeVertices.emplace_back(A, -normal);
+		drawGraph.EdgeVertices.emplace_back(B, normal);
 
-		drawGraph.EdgeVertices.push_back({ B,  normal, -1.0f, -1.0f });
-		drawGraph.EdgeVertices.push_back({ A, -normal, -1.0f, -1.0f });
-		drawGraph.EdgeVertices.push_back({ B, -normal, -1.0f, -1.0f });
+		drawGraph.EdgeVertices.emplace_back(B,  normal);
+		drawGraph.EdgeVertices.emplace_back(A, -normal);
+		drawGraph.EdgeVertices.emplace_back(B, -normal);
 	}
 
     // Default duration (just so it's not zero)
@@ -1293,36 +2447,62 @@ static DrawGraph CreateDrawGraph(const SourceGraph& graph)
     return drawGraph;
 }
 
+static void AddTimedDrawGraphEntry(const AlgorithmType algorithmType, Algorithm* algorithm, const SourceGraph& graph, DrawGraph& drawGraph, const AdjacencyMatrix& adjacencyMatrix, uint32_t source, uint32_t destination)
+{
+    if (!s_AlgorithmEnabled[(size_t)algorithmType])
+        return;
+
+	const auto start = std::chrono::high_resolution_clock::now();
+	algorithm->FindPath(adjacencyMatrix, source, destination);
+	const auto end = std::chrono::high_resolution_clock::now();
+	TraversalResult result = algorithm->GetResult();
+
+	const double elapsed = std::chrono::duration<double, std::nano>(end - start).count();
+	const double totalSteps = result.TraversedEdges.size();
+
+	for (size_t step = 0; step < result.TraversedEdges.size(); step++)
+	{
+		const uint32_t edgeIndex = result.TraversedEdges[step];
+		const double traversalTime = ((double)step / totalSteps) * elapsed;
+
+		for (uint32_t vertex = 0; vertex < 6; vertex++)
+			drawGraph.EdgeVertices[edgeIndex * 6 + vertex].TraversalTimes[(size_t)algorithmType] = traversalTime;
+	}
+
+	for (const auto edgeIndex : result.FinalEdges)
+	{
+		for (uint32_t vertex = 0; vertex < 6; vertex++)
+			drawGraph.EdgeVertices[edgeIndex * 6 + vertex].CompletionTimes[(size_t)algorithmType] = elapsed;
+	}
+
+    if (elapsed > drawGraph.Duration)
+        drawGraph.Duration = elapsed;
+
+    auto& metadata = drawGraph.Metadata[(size_t)algorithmType];
+    metadata.Valid = true;
+    metadata.Duration = elapsed;
+}
+
+#define TIME_ALGORITHM(name)                        \
+    name name##_algorithm;                                 \
+    AddTimedDrawGraphEntry(AlgorithmType::name, &name##_algorithm, graph, drawGraph, adjacencyMatrix, source, destination);
+
 static DrawGraph CreateTimedDrawGraph(uint32_t source, uint32_t destination, const SourceGraph& graph)
 {
     DrawGraph drawGraph = CreateDrawGraph(graph);
+    drawGraph.Duration = 0.0f;
 
     const AdjacencyMatrix adjacencyMatrix = BuildAdjacencyMatrix(graph);
 
-    const auto start = std::chrono::high_resolution_clock::now();
-    DFS bfs;
-    bfs.FindPath(adjacencyMatrix, source, destination);
-    const auto end = std::chrono::high_resolution_clock::now();
-    TraversalResult result = bfs.GetResult();
-
-    const double elapsed = std::chrono::duration<double, std::nano>(end - start).count();
-    const double totalSteps = result.TraversedEdges.size();
-
-    for (size_t step = 0; step < result.TraversedEdges.size(); step++)
-    {
-        const uint32_t edgeIndex = result.TraversedEdges[step];
-        const double traversalTime = ((double)step / totalSteps) * elapsed;
-
-        for (uint32_t vertex = 0; vertex < 6; vertex++)
-            drawGraph.EdgeVertices[edgeIndex * 6 + vertex].TraversalTime = traversalTime;
-    }
-
-    for (const auto edgeIndex : result.FinalEdges)
-    {
-        for (uint32_t vertex = 0; vertex < 6; vertex++)
-            drawGraph.EdgeVertices[edgeIndex * 6 + vertex].CompletionTime = elapsed;
-    }
-
-    drawGraph.Duration = elapsed;
+    TIME_ALGORITHM(BFS);
+    TIME_ALGORITHM(DFS);
+    TIME_ALGORITHM(DijkstraArray);
+    TIME_ALGORITHM(DijkstraQueue);
+    TIME_ALGORITHM(DEsopoPape);
+    TIME_ALGORITHM(BellmanFord);
+    TIME_ALGORITHM(FloydWarshall);
+    
     return drawGraph;
 }
+
+#undef TIME_ALGORITHM
