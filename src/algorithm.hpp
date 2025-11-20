@@ -9,6 +9,7 @@ struct TraversalResult
 {
 	std::vector<int> TraversedEdges;
 	std::vector<int> FinalEdges;
+	std::vector<size_t> Memory;
 };
 
 enum class AlgorithmType

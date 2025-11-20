@@ -1323,6 +1323,10 @@ static DrawGraph CreateTimedDrawGraph(uint32_t source, uint32_t destination, con
             drawGraph.EdgeVertices[edgeIndex * 6 + vertex].CompletionTime = elapsed;
     }
 
+    for (const auto r : result.Memory) {
+        std::cout << r << " ";
+    }
+
     drawGraph.Duration = elapsed;
     return drawGraph;
 }
