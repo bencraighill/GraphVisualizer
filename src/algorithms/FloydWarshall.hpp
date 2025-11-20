@@ -16,10 +16,10 @@ public:
         std::vector<std::vector<int>> prev(graph.size(), std::vector<int>(graph.size(), -1));
         std::vector<std::vector<int>> look_up(graph.size(), std::vector<int>(graph.size(), -1));
 
-        for (int u = 0; u < graph.size(); u++) {
+        for (size_t u = 0; u < graph.size(); u++) {
             dist[u][u] = 0.0f;
             prev[u][u] = u;
-            for (int v = 0; v < graph.size(); v++) {
+            for (size_t v = 0; v < graph.size(); v++) {
                 const auto [weight, edge_index] = graph[u][v];
                 if (weight > 0.0f) {
                     dist[u][v] = weight;
@@ -29,10 +29,10 @@ public:
             }
         }
 
-        for (int k = 0; k < graph.size(); k++) {
-            for (int i = 0; i < graph.size(); i++) {
+        for (size_t k = 0; k < graph.size(); k++) {
+            for (size_t i = 0; i < graph.size(); i++) {
                 if (dist[i][k] == inf) continue;
-                for (int j = 0; j < graph.size(); j++) {
+                for (size_t j = 0; j < graph.size(); j++) {
                     if (dist[k][j] == inf) continue;
                     if (dist[i][j] > dist[i][k] + dist[k][j]) {
                         dist[i][j] = dist[i][k] + dist[k][j];

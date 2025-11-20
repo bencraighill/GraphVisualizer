@@ -1300,7 +1300,7 @@ static DrawGraph CreateTimedDrawGraph(uint32_t source, uint32_t destination, con
     const AdjacencyMatrix adjacencyMatrix = BuildAdjacencyMatrix(graph);
 
     const auto start = std::chrono::high_resolution_clock::now();
-    DFS bfs;
+    BFS bfs;
     bfs.FindPath(adjacencyMatrix, source, destination);
     const auto end = std::chrono::high_resolution_clock::now();
     TraversalResult result = bfs.GetResult();
