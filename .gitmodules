@@ -11,3 +11,6 @@
 [submodule "vendor/gperftools"]
 	path = vendor/gperftools
 	url = https://github.com/gperftools/gperftools.git
+[submodule "vendor/tinyfiledialogs"]
+	path = vendor/tinyfiledialogs
+	url = https://github.com/native-toolkit/libtinyfiledialogs.git

@@ -10,7 +10,7 @@
 
 class DijkstraQueue : public Algorithm {
 public:
-    inline AlgorithmType GetName() const override { return AlgorithmType::DijkstraPriorityQueue; }
+    inline AlgorithmType GetName() const override { return AlgorithmType::DijkstraQueue; }
 
     void FindPath(const AdjacencyMatrix &graph, int start, int end) override {
         start_mem();
