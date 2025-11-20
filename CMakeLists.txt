@@ -41,6 +41,7 @@ add_subdirectory(vendor/glfw)
 # Add yaml-cpp
 set(YAML_CPP_BUILD_TESTS OFF CACHE BOOL "Disable yaml-cpp tests")
 add_subdirectory(vendor/yaml-cpp)
+add_subdirectory(vendor/gperftools)
 
 # Add executable with main.cpp + ImGui + Glad
 add_executable(GraphVisualizer
@@ -56,12 +57,15 @@ target_include_directories(GraphVisualizer PRIVATE
     vendor/tinyfiledialogs
     vendor/imgui
     vendor/imgui/backends
+    vendor/gperftools/src
 )
 
 # Link libraries
 target_link_libraries(GraphVisualizer PRIVATE
     glfw
     yaml-cpp
+    tcmalloc
+    profiler
 )
 
 # Link OpenGL (platform-specific)
@@ -80,4 +84,9 @@ if(MSVC)
     set_target_properties(GraphVisualizer PROPERTIES
         VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     )
+endif()
+
+if(UNIX)
+    find_package(X11 REQUIRED)
+    target_link_libraries(GraphVisualizer PRIVATE ${X11_LIBRARIES})
 endif()

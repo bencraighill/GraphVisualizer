@@ -9,6 +9,7 @@ struct TraversalResult
 {
 	std::vector<int> TraversedEdges;
 	std::vector<int> FinalEdges;
+	std::vector<size_t> Memory;
 };
 
 // Warning: modification of this requires modifying shader code

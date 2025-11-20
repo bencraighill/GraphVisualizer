@@ -2501,6 +2501,10 @@ static DrawGraph CreateTimedDrawGraph(uint32_t source, uint32_t destination, con
     TIME_ALGORITHM(DEsopoPape);
     TIME_ALGORITHM(BellmanFord);
     TIME_ALGORITHM(FloydWarshall);
+  
+    for (const auto r : result.Memory) {
+        std::cout << r << " ";
+    }
     
     return drawGraph;
 }

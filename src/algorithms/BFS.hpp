@@ -1,9 +1,11 @@
 #pragma once
 
 #include "../algorithm.hpp"
+#include "../memory.hpp"
 #include <cstdio>
 #include <queue>
 #include <vector>
+#include <algorithm>
 
 class BFS : public Algorithm
 {
@@ -12,6 +14,7 @@ public:
 
 	void FindPath(const AdjacencyMatrix& graph, int start, int end) override
 	{
+	    start_mem();
 		std::queue<int> queue;
 		std::vector<bool> visited(graph.size(), false);
 
@@ -38,6 +41,7 @@ public:
 
 				std::reverse(edges.begin(), edges.end());
 				m_Result.FinalEdges = std::move(edges);
+				m_Result.Memory = end_mem();
 				return;
 			}
 
@@ -57,6 +61,7 @@ public:
 		}
 
 		m_Result = {};
+		m_Result.Memory = end_mem();
 	}
 
 	TraversalResult GetResult() override
