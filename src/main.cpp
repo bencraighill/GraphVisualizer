@@ -968,6 +968,12 @@ static void NewGraph()
 
 static bool LoadGraph(const char* filepath)
 {
+    if (!filepath || strlen(filepath) == 0)
+        return false;
+
+    if (!std::filesystem::exists(filepath))
+        return false;
+
 	YAML::Node config;
 	try
 	{
@@ -2730,7 +2736,7 @@ static void OnImGuiRender()
 
 				ImGui::Text(FA_INPUT_TEXT " Text");
 				ImGui::NextColumn();
-				ImGui::InputText("##TextInput", &s_GenerationData.Text);
+				ImGui::InputTextMultiline("##TextInput", &s_GenerationData.Text);
 				ImGui::NextColumn();
 
 				ImGui::Text(FA_LINK " Ensure Connected");
