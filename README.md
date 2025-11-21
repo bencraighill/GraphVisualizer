@@ -1,7 +1,7 @@
 <br />
 <div align="center">
   <a href="https://github.com/bencraighill/GraphVisualizer.git">
-    <img src="/Resrouces/Branding/Logo.png" alt="Logo" width="80" height="80">
+    <img src="Resources/Branding/Logo.png" alt="Logo" width="80" height="80">
   </a>
 
   <h3 align="center">GraphVisualizer</h3>
@@ -21,6 +21,8 @@ If previously cloned non-recursively, clone the necessary submodules
 ```bash
 git submodule update --init
 ```
+**Dependencies**
+Run the `Setup.bat`/`Setup.sh` file inside the root directory which will install any necessary submodules and components. **Currently, Python is required for this project to execute correctly.**
 
 Build the project just like any other CMake project
 ```bash
