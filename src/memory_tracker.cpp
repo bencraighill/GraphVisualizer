@@ -5,6 +5,9 @@
 #define STB_TRUETYPE_IMPLEMENTATION
 #include "../vendor/truetype/stb_truetype.h"
 
+#define STB_IMAGE_IMPLEMENTATION
+#include "../vendor/stb_image/stb_image.h"
+
 MemoryTracker g_MemoryTracker;
 std::atomic<size_t> MemoryTracker::total_allocated{ 0 };
 

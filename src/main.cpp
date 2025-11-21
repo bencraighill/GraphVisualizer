@@ -61,6 +61,7 @@
 #include <tinyfiledialogs.h>
 
 #include "../vendor/truetype/stb_truetype.h"
+#include "../vendor/stb_image/stb_image.h"
 
 #include <filesystem>
 #include <iostream>
@@ -120,6 +121,19 @@ int main(int, char**)
     GLFWwindow* window = glfwCreateWindow((int)(1280 * main_scale), (int)(800 * main_scale), "Graph Visualizer", nullptr, nullptr);
     if (window == nullptr)
         return 1;
+
+	// Load PNG
+	int width, height, channels;
+	unsigned char* pixels = stbi_load("Resources/Branding/Icon.png", &width, &height, &channels, 4);
+	if (pixels) {
+		GLFWimage icon;
+		icon.width = width;
+		icon.height = height;
+		icon.pixels = pixels;
+		glfwSetWindowIcon(window, 1, &icon);
+		stbi_image_free(pixels);
+	}
+
     glfwMakeContextCurrent(window);
     glfwSwapInterval(1); // Enable vsync
 
