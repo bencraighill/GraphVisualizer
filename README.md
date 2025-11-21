@@ -1,7 +1,7 @@
 <br />
 <div align="center">
   <a href="https://github.com/bencraighill/GraphVisualizer.git">
-    <img src="Resrouces/Branding/Logo.png" alt="Logo" width="80" height="80">
+    <img src="/Resrouces/Branding/Logo.png" alt="Logo" width="80" height="80">
   </a>
 
   <h3 align="center">GraphVisualizer</h3>
@@ -40,7 +40,8 @@ If you are on UNIX
 ```
 
 # Preview
-
+![Startup](/Resources/Branding/Screenshots/Startup.png)
+![Generate_Path](/Resources/Branding/Screenshots/GeneratePath.png)
 
 # Acknowledgments
 - ![imgui](https://github.com/ocornut/imgui.git)
