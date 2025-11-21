@@ -64,11 +64,11 @@ If you are on UNIX
 ```
 
 # Preview
+![Playback](/Resources/Branding/Screenshots/VisualizerPlayback.gif)
 ![Single Path](/Resources/Branding/Screenshots/VisualizerSingle.png)
 ![Multiple Paths](/Resources/Branding/Screenshots/VisualizerMultiple.png)
 ![Map Menu](/Resources/Branding/Screenshots/VisualizerMapMenu.png)
 ![Startup](/Resources/Branding/Screenshots/VisualizerHello.png)
-![Playback](/Resources/Branding/Screenshots/VisualizerPlayback.gif)
 
 # Acknowledgments
  - [imgui](https://github.com/ocornut/imgui.git)
