@@ -2,6 +2,9 @@
 #include <cstdlib>
 #include <iostream>
 
+#define STB_TRUETYPE_IMPLEMENTATION
+#include "../vendor/truetype/stb_truetype.h"
+
 MemoryTracker g_MemoryTracker;
 std::atomic<size_t> MemoryTracker::total_allocated{ 0 };
 

@@ -59,9 +59,13 @@
 
 #include <yaml-cpp/yaml.h>
 #include <tinyfiledialogs.h>
+
+#include "../vendor/truetype/stb_truetype.h"
+
 #include <filesystem>
 #include <iostream>
 #include <numeric>
+#include <random>
 
 static void glfw_error_callback(int error, const char* description)
 {
@@ -385,6 +389,15 @@ struct GenerationData
     std::vector<Address> Addresses = { { "Kensington", "Sydney", "NSW", "Australia" }};
     CityTravelType TravelType = CityTravelType::Drive;
     bool SimplifiedGraph = false;
+
+    uint32_t Seed = 0;
+    uint32_t VertexCount = 20;
+    float Radius = 250.0f;
+    float EdgeProbability = 0.1f;
+    bool Connected = true;
+
+    std::string Text;
+
     bool Append = false;
     float Scale = 1.0f;
 };
@@ -1076,10 +1089,15 @@ static bool SaveGraph()
 	return true;
 }
 
+static bool LoadTTFFileToMemory(const std::string& path);
+static void LoadTextGraph(const std::string& text, float scale, bool connected);
+
 static void Init()
 {
 	std::cout << "Current working directory: "
 		<< std::filesystem::current_path() << "\n";
+
+    LoadTTFFileToMemory("Resources/Fonts/opensans/OpenSans-Regular.ttf");
 
     std::iota(s_SortedIndices.begin(), s_SortedIndices.end(), 0);
 
@@ -1097,6 +1115,7 @@ static void Init()
     RecomputeTraversalGPUData();
 
     NewGraph();
+    LoadTextGraph("Hello Visualizer!", 1000.0f, false);
 
 #if 0
     // Generate a test graph
@@ -1191,6 +1210,268 @@ static bool LoadCityGraph(const std::vector<GenerationData::Address>& addresses,
     }
 
     LoadGraph("network.algograph");
+}
+
+static inline uint64_t EdgeKey(uint32_t a, uint32_t b)
+{
+	if (a > b) std::swap(a, b);
+	return (uint64_t)a << 32 | b;
+}
+
+static void LoadRandomGraph(const uint32_t seed, const uint32_t vertexCount, const float radius, const float edgeProbability, const bool connected)
+{
+	std::mt19937 rng(seed ? seed : std::random_device{}());
+	std::uniform_real_distribution<float> angleDist(0.0f, 2.0f * 3.14159265359f);
+	std::uniform_real_distribution<float> radiusDist(0.0f, 1.0f);
+    std::uniform_real_distribution<float> prob(0.0f, 1.0f);
+
+    const size_t vertexOffset = s_SourceGraph.Vertices.size();
+    const size_t edgeOffset = s_SourceGraph.Edges.size();
+
+	s_SourceGraph.Vertices.reserve(vertexOffset + vertexCount);
+    s_SourceGraph.Edges.reserve(edgeOffset + (uint64_t)vertexCount * vertexCount * edgeProbability);
+
+    // Generate vertices
+	for (uint32_t i = 0; i < vertexCount; i++)
+	{
+		float angle = angleDist(rng);
+		float r = std::sqrt(radiusDist(rng)) * radius;
+		float x = std::cos(angle) * r;
+		float y = std::sin(angle) * r;
+
+		s_SourceGraph.Vertices.push_back({ ImVec2{x, y} });
+	}
+
+	std::unordered_set<uint64_t> edgeSet;
+	edgeSet.reserve(vertexCount * 8);
+
+	auto addEdge = [&](uint32_t a, uint32_t b)
+	{
+		if (a == b)
+			return;
+
+		const uint64_t key = EdgeKey(a, b);
+		if (!edgeSet.insert(key).second)
+			return;
+
+		s_SourceGraph.Edges.emplace_back(a + vertexOffset, b + vertexOffset);
+	};
+
+	// Random edges using Erdos-Renyi model
+	for (uint32_t i = 0; i < vertexCount; ++i)
+	{
+		for (uint32_t j = i + 1; j < vertexCount; ++j)
+		{
+			if (prob(rng) <= edgeProbability)
+				addEdge(i, j);
+		}
+	}
+
+    // Ensure connectedness
+	if (connected && vertexCount > 1)
+	{
+		for (uint32_t i = 1; i < vertexCount; ++i)
+		{
+			uint32_t parent = std::uniform_int_distribution<uint32_t>(0, i - 1)(rng);
+			addEdge(parent, i);
+		}
+	}
+}
+
+static std::vector<unsigned char> g_TTFBuffer;
+static bool g_FontInitialized = false;
+static stbtt_fontinfo g_StbFont;
+
+static bool LoadTTFFileToMemory(const std::string& path)
+{
+	std::ifstream ifs(path, std::ios::binary | std::ios::ate);
+	if (!ifs) return false;
+	size_t size = (size_t)ifs.tellg();
+	ifs.seekg(0);
+	g_TTFBuffer.resize(size);
+	ifs.read((char*)g_TTFBuffer.data(), size);
+	ifs.close();
+
+	int fontOffset = stbtt_GetFontOffsetForIndex(g_TTFBuffer.data(), 0);
+	if (!stbtt_InitFont(&g_StbFont, g_TTFBuffer.data(), fontOffset))
+		return false;
+
+	g_FontInitialized = true;
+	return true;
+}
+
+// simple quadratic bezier sampling: returns N+1 points from t=0..1 inclusive
+static void SampleQuadBezier(float x0, float y0, float x1, float y1, float x2, float y2, int segments, std::vector<ImVec2>& out)
+{
+	out.reserve(out.size() + segments + 1);
+	for (int i = 0; i <= segments; ++i)
+	{
+		float t = (float)i / (float)segments;
+		float u = 1.0f - t;
+		float xx = u * u * x0 + 2.0f * u * t * x1 + t * t * x2;
+		float yy = u * u * y0 + 2.0f * u * t * y1 + t * t * y2;
+		out.emplace_back(xx, yy);
+	}
+}
+
+static void LoadTextGraph(const std::string& text, float scale, bool connected)
+{
+    if (text.empty())
+        return;
+
+	if (!g_FontInitialized) {
+		std::cerr << "Font not loaded. Call LoadTTFFileToMemory(path) first.\n";
+		return;
+	}
+
+	const size_t vertexOffset = s_SourceGraph.Vertices.size();
+	const size_t edgeOffset = s_SourceGraph.Edges.size();
+
+	float stbScale = stbtt_ScaleForPixelHeight(&g_StbFont, scale);
+
+	uint32_t totalNewVertices = 0;
+	float penX = 0.0f;
+	float penY = 0.0f; // baseline
+
+	int ascent, descent, lineGap;
+	stbtt_GetFontVMetrics(&g_StbFont, &ascent, &descent, &lineGap);
+	float lineAdvance = (ascent - descent + lineGap) * stbScale;
+
+	s_SourceGraph.Vertices.reserve(vertexOffset + text.size() * 40);
+	s_SourceGraph.Edges.reserve(edgeOffset + text.size() * 60);
+
+	auto addVertex = [&](float x, float y) -> uint32_t {
+		s_SourceGraph.Vertices.push_back({ ImVec2{x, y} });
+		return totalNewVertices++;
+		};
+
+	for (size_t i = 0; i < text.size(); ++i)
+	{
+		unsigned char ch = (unsigned char)text[i];
+		if (ch == '\r') continue;
+		if (ch == '\n') { penX = 0.0f; penY += lineAdvance; continue; }
+
+		int glyphIndex = stbtt_FindGlyphIndex(&g_StbFont, ch);
+
+		// Handle space
+		if (glyphIndex == 0 && ch == ' ') {
+			int adv_w, lb;
+			stbtt_GetGlyphHMetrics(&g_StbFont, glyphIndex, &adv_w, &lb);
+			penX += adv_w * stbScale;
+			continue;
+		}
+
+		stbtt_vertex* verts = nullptr;
+		int nverts = stbtt_GetGlyphShape(&g_StbFont, glyphIndex, &verts);
+		if (nverts <= 0 || verts == nullptr) {
+			int adv_w, lb;
+			stbtt_GetGlyphHMetrics(&g_StbFont, glyphIndex, &adv_w, &lb);
+			penX += adv_w * stbScale;
+			continue;
+		}
+
+		std::vector<ImVec2> contourPoints;
+		const int segmentsPerCurve = 4; // drastically reduced for performance
+		float lastX = 0.0f, lastY = 0.0f;
+
+		for (int vi = 0; vi < nverts; ++vi)
+		{
+			stbtt_vertex& v = verts[vi];
+
+			if (v.type == STBTT_vmove)
+			{
+				// Flush previous contour if any
+				if (!contourPoints.empty())
+				{
+					std::vector<uint32_t> localIndices;
+					for (auto& p : contourPoints)
+						localIndices.push_back(addVertex(p.x, p.y));
+					for (size_t k = 0; k < localIndices.size(); ++k)
+					{
+						uint32_t a = localIndices[k];
+						uint32_t b = localIndices[(k + 1) % localIndices.size()];
+						if (a != b) s_SourceGraph.Edges.emplace_back(vertexOffset + a, vertexOffset + b);
+					}
+					contourPoints.clear();
+				}
+
+				float vx = (float)v.x * stbScale + penX;
+				float vy = (float)(-v.y) * stbScale + penY;
+				lastX = vx; lastY = vy;
+				contourPoints.emplace_back(vx, vy);
+			}
+			else if (v.type == STBTT_vline)
+			{
+				float vx = (float)v.x * stbScale + penX;
+				float vy = (float)(-v.y) * stbScale + penY;
+				contourPoints.emplace_back(vx, vy);
+				lastX = vx; lastY = vy;
+			}
+			else if (v.type == STBTT_vcurve) // quadratic
+			{
+				float cx = (float)v.cx * stbScale + penX;
+				float cy = (float)(-v.cy) * stbScale + penY;
+				float ex = (float)v.x * stbScale + penX;
+				float ey = (float)(-v.y) * stbScale + penY;
+
+				std::vector<ImVec2> samples;
+				SampleQuadBezier(lastX, lastY, cx, cy, ex, ey, segmentsPerCurve, samples);
+				for (size_t s = 1; s < samples.size(); ++s)
+					contourPoints.push_back(samples[s]);
+
+				lastX = ex; lastY = ey;
+			}
+			else if (v.type == STBTT_vcubic) // cubic (rare)
+			{
+				float cx = (float)v.cx * stbScale + penX;
+				float cy = (float)(-v.cy) * stbScale + penY;
+				float ex = (float)v.x * stbScale + penX;
+				float ey = (float)(-v.y) * stbScale + penY;
+
+				std::vector<ImVec2> samples;
+				SampleQuadBezier(lastX, lastY, cx, cy, ex, ey, segmentsPerCurve * 2, samples);
+				for (size_t s = 1; s < samples.size(); ++s)
+					contourPoints.push_back(samples[s]);
+
+				lastX = ex; lastY = ey;
+			}
+		}
+
+		// Flush final contour
+		if (!contourPoints.empty())
+		{
+			std::vector<uint32_t> localIndices;
+			for (auto& p : contourPoints)
+				localIndices.push_back(addVertex(p.x, p.y));
+			for (size_t k = 0; k < localIndices.size(); ++k)
+			{
+				uint32_t a = localIndices[k];
+				uint32_t b = localIndices[(k + 1) % localIndices.size()];
+				if (a != b) s_SourceGraph.Edges.emplace_back(vertexOffset + a, vertexOffset + b);
+			}
+		}
+
+		stbtt_FreeShape(&g_StbFont, verts);
+
+		int advWidth, lb;
+		stbtt_GetGlyphHMetrics(&g_StbFont, glyphIndex, &advWidth, &lb);
+		float adv = advWidth * stbScale;
+		if (i + 1 < text.size())
+		{
+			unsigned char chNext = (unsigned char)text[i + 1];
+			adv += stbtt_GetGlyphKernAdvance(&g_StbFont, glyphIndex, stbtt_FindGlyphIndex(&g_StbFont, chNext)) * stbScale;
+		}
+		penX += adv;
+	}
+
+	// Optionally connect all new vertices sequentially
+	if (connected)
+	{
+		const uint32_t firstNew = (uint32_t)vertexOffset;
+		const uint32_t lastNewExcl = firstNew + totalNewVertices;
+		for (uint32_t v = firstNew + 1; v < lastNewExcl; ++v)
+			s_SourceGraph.Edges.emplace_back(v - 1, v);
+	}
 }
 
 static float GetPlaybackDuration()
@@ -1453,7 +1734,7 @@ static bool ImGuiSequencer(float& currentTime, float minTime, float maxTime, flo
         for (size_t index = 0; index < AlgorithmTypeCount; index++)
         {
             const auto& metadata = s_DrawGraph.Metadata[index];
-            if (!metadata.Valid || !s_AlgorithmTrackMemory[index] || metadata.MemoryTrackingData.empty())
+            if (!metadata.Valid || !s_AlgorithmTrackMemory[index] || !s_AlgorithmVisible[index] || metadata.MemoryTrackingData.empty())
                 continue;
 
             const ImU32 color_line = ImGui::GetColorU32(s_AlgorithmCompletedColors[index]);
@@ -2345,8 +2626,11 @@ static void OnImGuiRender()
 
                 ImGui::Indent();
 
+				ImGui::Columns(2, nullptr, false);
+				ImGui::SetColumnWidth(0, 250.0f);
+
 				ImGui::TextUnformatted(FA_SUITCASE " Travel Options");
-				ImGui::SameLine();
+                ImGui::NextColumn();
 
 				if (ImGui::BeginCombo("##CityTypeCombo", cityTypes[current]))
 				{
@@ -2360,10 +2644,13 @@ static void OnImGuiRender()
 					}
 					ImGui::EndCombo();
 				}
+                ImGui::NextColumn();
 
 				ImGui::TextUnformatted(FA_SHAPES " Simplified Graph");
-				ImGui::SameLine();
+                ImGui::NextColumn();
 				ImGui::Checkbox("##SimpleGraph", &s_GenerationData.SimplifiedGraph);
+				ImGui::NextColumn();
+                ImGui::Columns(1);
 
                 ImGui::Unindent();
 
@@ -2372,11 +2659,78 @@ static void OnImGuiRender()
 			}
             else if (s_GenerationType == GenerationType::Random)
             {
+				ImGui::PushFont(ImGui::GetIO().Fonts->Fonts[2]);
+				ImGui::Text(FA_DICE " Random Generation Options");
+				ImGui::PopFont();
+				ImGui::Spacing();
 
+                ImGui::Indent();
+
+				ImGui::Columns(2, nullptr, false);
+				ImGui::SetColumnWidth(0, 250.0f);
+
+				ImGui::Text(FA_SEEDLING " Seed");
+				ImGui::NextColumn();
+				ImGui::DragScalar("##SeedInput", ImGuiDataType_U32, &s_GenerationData.Seed, 1.0f);
+				ImGui::NextColumn();
+
+				ImGui::Text(FA_CIRCLE " Vertex Count");
+				ImGui::NextColumn();
+				ImGui::DragScalar("##VertexCountInput", ImGuiDataType_U32, &s_GenerationData.VertexCount, 1.0f);
+				ImGui::NextColumn();
+
+				ImGui::Text(FA_RULER " Radius");
+				ImGui::NextColumn();
+				ImGui::DragFloat("##RadiusInput", &s_GenerationData.Radius, 1.0f, 0.0f);
+				ImGui::NextColumn();
+
+				ImGui::Text(FA_PERCENT " Edge Probability");
+				ImGui::NextColumn();
+				ImGui::DragFloat("##EdgeProbability", &s_GenerationData.EdgeProbability, 1.0f, 0.0f, 1.0f);
+				ImGui::NextColumn();
+
+				ImGui::Text(FA_LINK " Ensure Connected");
+				ImGui::NextColumn();
+				ImGui::Checkbox("##Connected", &s_GenerationData.Connected);
+				ImGui::NextColumn();
+
+				ImGui::Columns(1);
+
+                ImGui::Unindent();
+
+				ImGui::Spacing();
+				ImGui::Separator();
+				ImGui::Spacing();
             }
 			else if (s_GenerationType == GenerationType::Text)
 			{
+				ImGui::PushFont(ImGui::GetIO().Fonts->Fonts[2]);
+				ImGui::Text(FA_TEXT_SIZE " Text Generation Options");
+				ImGui::PopFont();
+				ImGui::Spacing();
 
+				ImGui::Indent();
+
+				ImGui::Columns(2, nullptr, false);
+				ImGui::SetColumnWidth(0, 250.0f);
+
+				ImGui::Text(FA_INPUT_TEXT " Text");
+				ImGui::NextColumn();
+				ImGui::InputText("##TextInput", &s_GenerationData.Text);
+				ImGui::NextColumn();
+
+				ImGui::Text(FA_LINK " Ensure Connected");
+				ImGui::NextColumn();
+				ImGui::Checkbox("##ConnectedInput", &s_GenerationData.Connected);
+				ImGui::NextColumn();
+
+				ImGui::Columns(1);
+
+				ImGui::Unindent();
+
+				ImGui::Spacing();
+				ImGui::Separator();
+				ImGui::Spacing();
 			}
 
 			ImGui::PushFont(ImGui::GetIO().Fonts->Fonts[2]);
@@ -2386,13 +2740,21 @@ static void OnImGuiRender()
 
 			{
                 ImGui::Indent();
-                ImGui::TextUnformatted(FA_EXPAND " Scale");
-                ImGui::SameLine();
+
+				ImGui::Columns(2, nullptr, false);
+				ImGui::SetColumnWidth(0, 250.0f);
+
+				ImGui::TextUnformatted(FA_EXPAND " Scale");
+				ImGui::NextColumn();
 				ImGui::DragFloat("##ScaleInput", &s_GenerationData.Scale, 0.2f, 0.1f, 10.0f, "%.2f");
+				ImGui::NextColumn();
 
 				ImGui::TextUnformatted(FA_LINK " Append to Existing");
-				ImGui::SameLine();
+				ImGui::NextColumn();
 				ImGui::Checkbox("##AppendGraph", &s_GenerationData.Append);
+				ImGui::NextColumn();
+
+				ImGui::Columns(1);
 
                 ImGui::Unindent();
 			}
@@ -2423,7 +2785,19 @@ static void OnImGuiRender()
                 if (!s_GenerationData.Append)
                     NewGraph();
 
-                LoadCityGraph(s_GenerationData.Addresses, s_GenerationData.TravelType, s_GenerationData.SimplifiedGraph, s_GenerationData.Scale);
+                switch (s_GenerationType)
+                {
+                case GenerationType::City:
+                    LoadCityGraph(s_GenerationData.Addresses, s_GenerationData.TravelType, s_GenerationData.SimplifiedGraph, s_GenerationData.Scale);
+                    break;
+                case GenerationType::Random:
+                    LoadRandomGraph(s_GenerationData.Seed, s_GenerationData.VertexCount, s_GenerationData.Radius * s_GenerationData.Scale, s_GenerationData.EdgeProbability, s_GenerationData.Connected);
+                    break;
+                case GenerationType::Text:
+                    LoadTextGraph(s_GenerationData.Text, 1000.0f * s_GenerationData.Scale, s_GenerationData.Connected);
+                    break;
+                }
+
                 RegenerateGraph();
 
 				s_GenerationType = GenerationType::None;
