@@ -156,7 +156,7 @@ int main(int, char**)
     //io.ConfigViewportsNoAutoMerge = true;
     //io.ConfigViewportsNoTaskBarIcon = true;
 
-    io.FontDefault = io.Fonts->AddFontFromFileTTF("Resources/Fonts/opensans/OpenSans-Regular.ttf", 17.0f);
+    io.FontDefault = io.Fonts->AddFontFromFileTTF("Resources/Fonts/opensans/OpenSans-Regular.ttf", 19.0f);
 
     ImFontConfig config;
     config.MergeMode = true;
@@ -168,7 +168,7 @@ int main(int, char**)
     ImWchar* other_ranges = new ImWchar[]{ (ImWchar)0xf041, (ImWchar)0xf041, (ImWchar)0xf3c5,(ImWchar)0xf3c5, (ImWchar)0xf64f, (ImWchar)0xf64f, (ImWchar)0xf894, (ImWchar)0xf894, (ImWchar)0xf640, (ImWchar)0xf640, 0 };
     io.Fonts->AddFontFromFileTTF("Resources/Fonts/fontawesome/Font Awesome 6 Pro-Solid-900.otf", 60, nullptr, other_ranges);
     
-    io.Fonts->AddFontFromFileTTF("Resources/Fonts/opensans/OpenSans-Bold.ttf", 18.0f);
+    io.Fonts->AddFontFromFileTTF("Resources/Fonts/opensans/OpenSans-Bold.ttf", 20.0f);
     ImGui::GetIO().Fonts->AddFontFromFileTTF("Resources/Fonts/fontawesome/Font Awesome 6 Pro-Solid-900.otf", 27.0f, &config, icon_ranges);
 
     // Setup Dear ImGui style
