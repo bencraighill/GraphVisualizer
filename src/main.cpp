@@ -39,6 +39,8 @@
 
 #include "text_symbols.hpp"
 
+#include "memory_tracker.hpp"
+
 #include "algorithm.hpp"
 #include "algorithms/BFS.hpp"
 #include "algorithms/DFS.hpp"
@@ -48,9 +50,8 @@
 #include "algorithms/BellmanFord.hpp"
 #include "algorithms/FloydWarshall.hpp"
 
-#include "memory.hpp"
-
 #include <vector>
+#include <unordered_set>
 #include <queue>
 #include <fstream>
 #include <chrono>
@@ -304,6 +305,9 @@ static bool s_ShowEdgeLabels = false;
 static bool s_ShowTraversalPaths = true;
 static bool s_ShowFinalPaths = true;
 
+static bool s_TrackMemory = true;
+static float s_MemoryTrackingInterval = 10.0f; // ms
+
 enum class DragType
 {
     None,
@@ -343,6 +347,7 @@ static std::array<ImVec4, AlgorithmTypeCount> s_AlgorithmCompletedColors = {{
 
 static std::array<ImVec4, AlgorithmTypeCount> s_AlgorithmTraversedColors;
 static std::array<GLint, AlgorithmTypeCount> s_AlgorithmVisible;
+static std::array<bool, AlgorithmTypeCount> s_AlgorithmTrackMemory;
 static std::array<float, AlgorithmTypeCount> s_AlgorithmThickness;
 static std::array<bool, AlgorithmTypeCount> s_AlgorithmEnabled = { true, true };
 
@@ -449,8 +454,9 @@ struct DrawGraphAlgorithmMetadata
     bool Valid = false;
     float Duration = 0.0f;
     float TotalDistance = 0.0f;
-    float PeakMemoryUsage = 0.0f;
+    size_t PeakMemoryUsage = 0.0f;
     float GraphTraversalPercentage = 0.0f;
+    std::vector<size_t> MemoryTrackingData;
 };
 
 struct DrawGraph
@@ -1015,6 +1021,9 @@ static bool SaveGraph()
 		"Graph Network Visualizer File (.algograph)"
 	);
 
+    if (!filepath || strlen(filepath) == 0)
+        return false;
+
 	YAML::Emitter out;
 	out << YAML::BeginMap;
 
@@ -1084,6 +1093,7 @@ static void Init()
 
     s_AlgorithmVisible.fill(true);
     s_AlgorithmThickness.fill(1.0f);
+    s_AlgorithmTrackMemory.fill(true);
     RecomputeTraversalGPUData();
 
     NewGraph();
@@ -1209,7 +1219,7 @@ static void OnUpdate()
         }
         else
         {
-            s_Time += (deltaTime / PlaybackCycleTime) * duration;
+            s_Time += (deltaTime / PlaybackCycleTime) * duration * s_PlaybackSpeed;
         }
     }
 
@@ -1423,6 +1433,74 @@ static bool ImGuiSequencer(float& currentTime, float minTime, float maxTime, flo
         line_color, 2.0f
     );
 
+    // Draw Histogram
+    if (s_TrackMemory)
+    {
+        const float graph_bottom = canvas_pos.y + canvas_size.y;
+        const float graph_top = canvas_pos.y + 50.0f;
+        const float graph_height = graph_bottom - graph_top;
+
+        size_t maxMemory = 1;
+        for (size_t index = 0; index < AlgorithmTypeCount; index++)
+        {
+            const auto& metadata = s_DrawGraph.Metadata[index];
+            if (!metadata.Valid || !s_AlgorithmTrackMemory[index] || !s_AlgorithmVisible[index])
+                continue;
+            if (metadata.PeakMemoryUsage > maxMemory)
+                maxMemory = metadata.PeakMemoryUsage;
+        }
+
+        for (size_t index = 0; index < AlgorithmTypeCount; index++)
+        {
+            const auto& metadata = s_DrawGraph.Metadata[index];
+            if (!metadata.Valid || !s_AlgorithmTrackMemory[index] || metadata.MemoryTrackingData.empty())
+                continue;
+
+            const ImU32 color_line = ImGui::GetColorU32(s_AlgorithmCompletedColors[index]);
+            const ImU32 color_fill = IM_COL32(
+                ((color_line >> 0) & 0xFF),
+                ((color_line >> 8) & 0xFF),
+                ((color_line >> 16) & 0xFF),
+                80
+            );
+
+            const size_t sampleCount = metadata.MemoryTrackingData.size();
+            if (sampleCount < 2)
+                continue;
+
+            ImVector<ImVec2> points;
+            points.reserve(sampleCount + 4);
+
+			const float minTime = 0.0f;
+			const float maxTime = s_DrawGraph.Duration;
+			const float algorithmStart = 0.0f;
+            const float algorithmEnd = metadata.Duration;
+			const float algorithmRange = algorithmEnd - algorithmStart;
+			const float timelineRange = maxTime - minTime;
+
+            points.push_back(ImVec2(canvas_pos.x, graph_bottom));
+
+            for (size_t i = 0; i < sampleCount; i++)
+            {
+				float fraction = (sampleCount == 1) ? 1.0f : (i / float(sampleCount - 1));
+				float t = fraction * algorithmRange;
+
+				float x = canvas_pos.x + ((t + algorithmStart - minTime) / timelineRange) * canvas_width;
+				x = std::min(x, canvas_pos.x + ((algorithmEnd - minTime) / timelineRange) * canvas_width);
+
+				float memFraction = metadata.MemoryTrackingData[i] / float(maxMemory);
+				float y = graph_bottom - memFraction * graph_height;
+
+                points.push_back(ImVec2(x, y));
+            }
+
+            const float xEnd = canvas_pos.x + ((algorithmEnd - minTime) / timelineRange) * canvas_width;
+            points.push_back(ImVec2(xEnd, graph_bottom));
+            draw_list->AddConcavePolyFilled(points.Data, points.size(), color_fill);
+            draw_list->AddPolyline(points.Data + 1, points.size() - 2, color_line, 0, 2.0f);
+        }
+    }
+
     // Draw playhead
     float playhead_x = canvas_pos.x + ((currentTime - minTime) / range) * canvas_width;
     playhead_x = ImClamp(playhead_x, canvas_pos.x, canvas_pos.x + canvas_width);
@@ -1629,6 +1707,100 @@ static bool DrawTextButton(const char* label, const ImVec2& size = ImVec2(0, 0))
     return result;
 }
 
+static bool SliderScalar(const char* label, ImGuiDataType data_type, void* p_data, const void* p_min, const void* p_max, const char* format, ImGuiSliderFlags flags)
+{
+	ImGuiWindow* window = ImGui::GetCurrentWindow();
+	if (window->SkipItems)
+		return false;
+
+	ImGuiContext& g = *GImGui;
+	const ImGuiStyle& style = g.Style;
+	const ImGuiID id = window->GetID(label);
+	const float w = ImGui::CalcItemWidth();
+
+	const ImVec2 label_size = ImGui::CalcTextSize(label, NULL, true);
+	const ImRect frame_bb(window->DC.CursorPos, window->DC.CursorPos + ImVec2(w, label_size.y + style.FramePadding.y * 2.0f));
+	const ImRect total_bb(frame_bb.Min, frame_bb.Max + ImVec2(label_size.x > 0.0f ? style.ItemInnerSpacing.x + label_size.x : 0.0f, 0.0f));
+
+	const bool temp_input_allowed = (flags & ImGuiSliderFlags_NoInput) == 0;
+    ImGui::ItemSize(total_bb, style.FramePadding.y);
+	if (!ImGui::ItemAdd(total_bb, id, &frame_bb, temp_input_allowed ? ImGuiItemFlags_Inputable : 0))
+		return false;
+
+	// Default format string when passing NULL
+	if (format == NULL)
+		format = ImGui::DataTypeGetInfo(data_type)->PrintFmt;
+
+	const bool hovered = ImGui::ItemHoverable(frame_bb, id, g.LastItemData.ItemFlags);
+	bool temp_input_is_active = temp_input_allowed && ImGui::TempInputIsActive(id);
+	if (!temp_input_is_active)
+	{
+		// Tabbing or CTRL+click on Slider turns it into an input box
+		const bool clicked = hovered && ImGui::IsMouseClicked(0, ImGuiInputFlags_None, id);
+		const bool make_active = (clicked || g.NavActivateId == id);
+		if (make_active && clicked)
+            ImGui::SetKeyOwner(ImGuiKey_MouseLeft, id);
+		if (make_active && temp_input_allowed)
+			if ((clicked && g.IO.KeyCtrl) || (g.NavActivateId == id && (g.NavActivateFlags & ImGuiActivateFlags_PreferInput)))
+				temp_input_is_active = true;
+
+		// Store initial value (not used by main lib but available as a convenience but some mods e.g. to revert)
+		if (make_active)
+			memcpy(&g.ActiveIdValueOnActivation, p_data, ImGui::DataTypeGetInfo(data_type)->Size);
+
+		if (make_active && !temp_input_is_active)
+		{
+            ImGui::SetActiveID(id, window);
+            ImGui::SetFocusID(id, window);
+            ImGui::FocusWindow(window);
+			g.ActiveIdUsingNavDirMask |= (1 << ImGuiDir_Left) | (1 << ImGuiDir_Right);
+		}
+	}
+
+	if (temp_input_is_active)
+	{
+		// Only clamp CTRL+Click input when ImGuiSliderFlags_ClampOnInput is set (generally via ImGuiSliderFlags_AlwaysClamp)
+		const bool clamp_enabled = (flags & ImGuiSliderFlags_ClampOnInput) != 0;
+		return ImGui::TempInputScalar(frame_bb, id, label, data_type, p_data, format, clamp_enabled ? p_min : NULL, clamp_enabled ? p_max : NULL);
+	}
+
+	// Draw frame
+	const ImU32 frame_col = ImGui::GetColorU32(g.ActiveId == id ? ImGuiCol_FrameBgActive : hovered ? ImGuiCol_FrameBgHovered : ImGuiCol_FrameBg);
+    ImGui::RenderNavCursor(frame_bb, id);
+    //ImGui::RenderFrame(frame_bb.Min, frame_bb.Max, frame_col, true, g.Style.FrameRounding);
+	const float vertical_center = (frame_bb.Min.y + frame_bb.Max.y) * 0.5f;
+    ImGui::RenderFrame(ImVec2(frame_bb.Min.x, vertical_center - style.FramePadding.y), ImVec2(frame_bb.Max.x, vertical_center + style.FramePadding.y), frame_col, true, g.Style.FrameRounding);
+
+	// Slider behavior
+	ImRect grab_bb;
+	const bool value_changed = ImGui::SliderBehavior(frame_bb, id, data_type, p_data, p_min, p_max, format, flags, &grab_bb);
+	if (value_changed)
+        ImGui::MarkItemEdited(id);
+
+	// Render grab
+	if (grab_bb.Max.x > grab_bb.Min.x)
+		//window->DrawList->AddRectFilled(grab_bb.Min, grab_bb.Max, ImGui::GetColorU32(g.ActiveId == id ? ImGuiCol_SliderGrabActive : ImGuiCol_SliderGrab), style.GrabRounding);
+        window->DrawList->AddCircleFilled((grab_bb.Min + grab_bb.Max) * 0.5f, grab_bb.GetHeight() * 0.55f - style.FramePadding.y, ImGui::GetColorU32(g.ActiveId == id ? ImGuiCol_SliderGrabActive : ImGuiCol_SliderGrab));
+
+	// Display value using user-provided display format so user can add prefix/suffix/decorations to the value.
+	char value_buf[64];
+	const char* value_buf_end = value_buf + ImGui::DataTypeFormatString(value_buf, IM_ARRAYSIZE(value_buf), data_type, p_data, format);
+	if (g.LogEnabled)
+        ImGui::LogSetNextTextDecoration("{", "}");
+    ImGui::RenderTextClipped(frame_bb.Min, frame_bb.Max, value_buf, value_buf_end, NULL, ImVec2(0.5f, 0.5f));
+
+	if (label_size.x > 0.0f)
+        ImGui::RenderText(ImVec2(frame_bb.Max.x + style.ItemInnerSpacing.x, frame_bb.Min.y + style.FramePadding.y), label);
+
+	IMGUI_TEST_ENGINE_ITEM_INFO(id, label, g.LastItemData.StatusFlags | (temp_input_allowed ? ImGuiItemStatusFlags_Inputable : 0));
+	return value_changed;
+}
+
+static bool SliderFloat(const char* label, float* v, float v_min, float v_max, const char* format, ImGuiSliderFlags flags)
+{
+	return SliderScalar(label, ImGuiDataType_Float, v, &v_min, &v_max, format, flags);
+}
+
 // Table Sorting logic
 static ImGuiTableSortSpecs* g_SortSpecs = nullptr;
 
@@ -1724,6 +1896,13 @@ static void OnImGuiRender()
             ImGui::Checkbox(FA_TAG " Show Edge Labels", &s_ShowEdgeLabels);
             ImGui::Checkbox(FA_CHART_NETWORK " Show Traversal Paths", &s_ShowTraversalPaths);
             ImGui::Checkbox(FA_FLAG_CHECKERED " Show Final Paths", &s_ShowFinalPaths);
+
+            ImGui::Separator();
+
+            ImGui::Checkbox(FA_MEMORY " Track Memory", &s_TrackMemory);
+
+            if (s_TrackMemory)
+                ImGui::DragFloat(FA_STOPWATCH " Tracking Interval", &s_MemoryTrackingInterval, 1.0f, 0.1f, 50.0f, "%.3f ms");
 
             ImGui::EndMenu();
         }
@@ -1915,13 +2094,20 @@ static void OnImGuiRender()
 			ImGui::TextDisabled(FA_CIRCLE_INFO " Graph Context");
         }
 
-        if (s_PopupContext.Type == DragType::Edge)
+        if (s_PopupContext.Type == DragType::Vertex)
         {
             ImGui::Separator();
-            const auto& edge = s_SourceGraph.Edges[s_PopupContext.Index];
-            ImGui::TextDisabled(FA_CIRCLE " Endpoint A: %d", edge.IndexA);
-            ImGui::TextDisabled(FA_CIRCLE " Endpoint B: %d", edge.IndexB);
+            const auto& vertex = s_SourceGraph.Vertices[s_PopupContext.Index];
+            ImGui::TextDisabled(FA_ARROWS_UP_DOWN_LEFT_RIGHT " Position: (%.2f, %.2f)", vertex.Position.x, vertex.Position.y);
         }
+
+		if (s_PopupContext.Type == DragType::Edge)
+		{
+			ImGui::Separator();
+			const auto& edge = s_SourceGraph.Edges[s_PopupContext.Index];
+			ImGui::TextDisabled(FA_CIRCLE " Endpoint A: %d", edge.IndexA);
+			ImGui::TextDisabled(FA_CIRCLE " Endpoint B: %d", edge.IndexB);
+		}
 
         ImGui::Separator();
 
@@ -2184,6 +2370,14 @@ static void OnImGuiRender()
 				ImGui::Spacing();
 				ImGui::Spacing();
 			}
+            else if (s_GenerationType == GenerationType::Random)
+            {
+
+            }
+			else if (s_GenerationType == GenerationType::Text)
+			{
+
+			}
 
 			ImGui::PushFont(ImGui::GetIO().Fonts->Fonts[2]);
 			ImGui::Text(FA_SLIDERS " Graph Options");
@@ -2262,8 +2456,19 @@ static void OnImGuiRender()
         s_AlgorithmEnabled[index] && s_AlgorithmVisible[index] ? ImGui::TextUnformatted(AlgorithmTypeToString((AlgorithmType)index)) : ImGui::TextDisabled(AlgorithmTypeToString((AlgorithmType)index));
 		ImGui::SameLine();
 
-        ImGui::Dummy(ImVec2(ImGui::GetContentRegionAvail().x - 200.0f, 0.0f));
+        ImGui::Dummy(ImVec2(ImGui::GetContentRegionAvail().x - 225.0f, 0.0f));
         ImGui::SameLine();
+
+        const bool disabled = !s_AlgorithmTrackMemory[index];
+        if (disabled)
+            ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetColorU32(ImGuiCol_TextDisabled));
+		if (DrawTextButton(FA_MEMORY))
+            s_AlgorithmTrackMemory[index] = !s_AlgorithmTrackMemory[index];
+        if (disabled)
+            ImGui::PopStyleColor();
+        ImGui::SetItemTooltip(FA_MEMORY " Memory tracking for %s is %s.", AlgorithmTypeToString((AlgorithmType)index), s_AlgorithmTrackMemory[index] ? "enabled" : "disabled");
+
+		ImGui::SameLine();
 
 		ImGui::TextDisabled(FA_PEN);
 		ImGui::SameLine();
@@ -2324,6 +2529,8 @@ static void OnImGuiRender()
 	ImGui::TextUnformatted(FA_CHART_LINE " Statistics");
 	ImGui::PopFont();
 
+    bool any_valid = false;
+
 	if (ImGui::BeginTable("##StatisticsTable", 5, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Sortable))
     {
 		// Column headers
@@ -2351,6 +2558,8 @@ static void OnImGuiRender()
             if (!metadata.Valid)
                 continue;
 
+            any_valid = true;
+
 			ImGui::TableNextRow();
 
 			ImGui::TableSetColumnIndex(0);
@@ -2363,7 +2572,7 @@ static void OnImGuiRender()
 			ImGui::Text("%.0f units", metadata.TotalDistance);
 
 			ImGui::TableSetColumnIndex(3);
-			ImGui::Text("%.3f Kb", metadata.PeakMemoryUsage);
+            metadata.MemoryTrackingData.empty() ? ImGui::TextDisabled(" " FA_DASH " ") : ImGui::Text("%zu KiB", metadata.PeakMemoryUsage / 1024);
 
 			ImGui::TableSetColumnIndex(4);
 			ImGui::Text("%.0f%%", metadata.GraphTraversalPercentage * 100.0f);
@@ -2372,11 +2581,24 @@ static void OnImGuiRender()
 		ImGui::EndTable();
 	}
 
+    if (!any_valid)
+    {
+        const char* message = "Generate a route to view statistics here.";
+        ImGui::Dummy(ImVec2((ImGui::GetContentRegionAvail().x - ImGui::CalcTextSize(message).x) * 0.5f, 0.0f));
+        ImGui::SameLine();
+        ImGui::TextDisabled(message);
+    }
+
     ImGui::End();
 
     // Timeline
     ImGui::Begin("Timeline", nullptr, window_flags);
-    ImGui::Dummy(ImVec2((ImGui::GetContentRegionAvail().x - (100.0f + ImGui::GetStyle().FramePadding.x * 2.0f)) * 0.5f, 0.0f));
+    ImGui::Dummy(ImVec2((ImGui::GetContentRegionAvail().x - (450.0f + ImGui::GetStyle().FramePadding.x * 4.0f)) * 0.5f, 0.0f));
+    ImGui::SameLine();
+    if (ImGui::Button(FA_BACKWARD_STEP, ImVec2(50, 0)))
+    {
+        s_Time = 0.0f;
+    }
     ImGui::SameLine();
     if (ImGui::Button(s_Paused ? FA_PLAY : FA_PAUSE, ImVec2(50, 0)))
         s_Paused = !s_Paused;
@@ -2388,6 +2610,23 @@ static void OnImGuiRender()
         ImGui::PopStyleColor();
     if (clicked)
         s_Loop = !s_Loop;
+    ImGui::SameLine();
+    if (ImGui::Button(FA_FORWARD_STEP, ImVec2(50, 0)))
+    {
+		s_Time = GetPlaybackDuration();
+		s_Loop = false;
+    }
+
+    ImGui::SameLine();
+    ImGui::Dummy(ImVec2(50.0f, 0.0f));
+    ImGui::SameLine();
+    ImGui::TextDisabled(FA_TURTLE);
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(200.0f);
+    SliderFloat("##PlaybackSpeedSlider", &s_PlaybackSpeed, 0.01f, 2.0f, "%.3f", ImGuiSliderFlags_Logarithmic);
+    ImGui::SameLine();
+    ImGui::TextDisabled(FA_RABBIT);
+
     ImGuiSequencer(s_Time, 0.0f, GetPlaybackDuration(), ImGui::GetContentRegionAvail().y);
     ImGui::End();
 }
@@ -2454,11 +2693,15 @@ static void AddTimedDrawGraphEntry(const AlgorithmType algorithmType, Algorithm*
     if (!s_AlgorithmEnabled[(size_t)algorithmType])
         return;
 
-    START_MEMORY_TRACKING();
+    const bool tracking = s_TrackMemory && s_AlgorithmTrackMemory[(size_t)algorithmType];
+    if (tracking)
+        START_MEMORY_TRACKING(s_MemoryTrackingInterval);
+
 	const auto start = std::chrono::high_resolution_clock::now();
 	algorithm->FindPath(adjacencyMatrix, source, destination);
 	const auto end = std::chrono::high_resolution_clock::now();
-    std::vector<size_t> memory = END_MEMORY_TRACKING();
+
+    std::vector<size_t> memory = tracking ? END_MEMORY_TRACKING() : std::vector<size_t>{};
 
 	TraversalResult result = algorithm->GetResult();
 
@@ -2483,13 +2726,29 @@ static void AddTimedDrawGraphEntry(const AlgorithmType algorithmType, Algorithm*
     if (elapsed > drawGraph.Duration)
         drawGraph.Duration = elapsed;
 
-	for (const auto r : memory) {
-		std::cout << r << " ";
-	}
-
     auto& metadata = drawGraph.Metadata[(size_t)algorithmType];
     metadata.Valid = true;
     metadata.Duration = elapsed;
+
+    std::unordered_set<uint32_t> uniqueEdges(result.TraversedEdges.begin(), result.TraversedEdges.end());
+    metadata.GraphTraversalPercentage = static_cast<double>(uniqueEdges.size()) / static_cast<double>(s_SourceGraph.Edges.size());
+
+    metadata.PeakMemoryUsage = memory.empty() ? 0 : memory.back();
+
+    metadata.TotalDistance = 0.0f;
+	for (const auto edgeIndex : result.FinalEdges)
+    {
+        if (edgeIndex < 0 || edgeIndex >= s_SourceGraph.Edges.size())
+            continue;
+
+        const auto& edge = s_SourceGraph.Edges[edgeIndex];
+        const auto& v0 = s_SourceGraph.Vertices[edge.IndexA].Position;
+		const auto& v1 = s_SourceGraph.Vertices[edge.IndexB].Position;
+        double edgeLength = Distance(v0, v1);
+		metadata.TotalDistance += edgeLength;
+	}
+
+    metadata.MemoryTrackingData = std::move(memory);
 }
 
 #define TIME_ALGORITHM(name)                        \

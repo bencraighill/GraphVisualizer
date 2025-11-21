@@ -42,13 +42,10 @@ add_subdirectory(vendor/glfw)
 set(YAML_CPP_BUILD_TESTS OFF CACHE BOOL "Disable yaml-cpp tests")
 add_subdirectory(vendor/yaml-cpp)
 
-if(NOT WIN32)
-    add_subdirectory(vendor/gperftools)
-endif()
-
 # Add executable with main.cpp + ImGui + Glad
 add_executable(GraphVisualizer
     src/main.cpp
+    src/memory_tracker.cpp
     ${IMGUI_SOURCES}
     ${GLAD_SOURCES}
     ${TFD_SOURCES}
@@ -62,24 +59,11 @@ target_include_directories(GraphVisualizer PRIVATE
     vendor/imgui/backends
 )
 
-if(NOT WIN32)
-    target_include_directories(GraphVisualizer PRIVATE
-        vendor/gperftools/src
-    )
-endif()
-
 # Link libraries
 target_link_libraries(GraphVisualizer PRIVATE
     glfw
     yaml-cpp
 )
-
-if(NOT WIN32)
-    target_link_libraries(GraphVisualizer PRIVATE
-        tcmalloc
-        profiler
-    )
-endif()
 
 # Link OpenGL (platform-specific)
 if(WIN32)
@@ -99,7 +83,7 @@ if(MSVC)
     )
 endif()
 
-if(UNIX)
+if(UNIX AND NOT APPLE)
     find_package(X11 REQUIRED)
     target_link_libraries(GraphVisualizer PRIVATE ${X11_LIBRARIES})
 endif()
